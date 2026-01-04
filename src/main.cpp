@@ -30,6 +30,8 @@ public:
   ServoError last_error_ = ServoError::None;
   HardwareSerial* bus_serial_ = nullptr;
   uint32_t timeout_ms_ = 10;
+  static const uint32_t max_servo_count = 10; // maximum servo count supported at once
+  
 
 public:
 
@@ -44,6 +46,11 @@ public:
   inline void clear_error() { last_error_ = ServoError::None; }
 
   bool send_command(uint8_t id, uint8_t instruction, uint8_t* params = nullptr, int param_count = 0) {
+    const int max_param_count = max_servo_count + 2;
+    if (param_count > max_param_count) {
+      last_error_ = ServoError::InvalidParameter;
+      return false;
+    }
 
     // clear the rx
     if (bus_serial_->available()) {
@@ -55,7 +62,8 @@ public:
       Serial.println();
     }
 
-    uint8_t packet[256];  // Max packet size
+    constexpr int MAX_PACKET_SIZE = 6 + 2 + max_servo_count;  // header + (addr + len) + servo IDs
+    uint8_t packet[MAX_PACKET_SIZE];
     
     // Build packet
     packet[0] = 0xFF;
