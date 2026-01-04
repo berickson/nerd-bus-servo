@@ -29,6 +29,7 @@ public:
   private:
   ServoError last_error_ = ServoError::None;
   HardwareSerial* bus_serial_ = nullptr;
+  uint32_t timeout_ms_ = 10;
 
 public:
 
@@ -82,10 +83,15 @@ public:
     
     // Discard echo bytes as they arrive during transmission
     int echo_count = 0;
+    unsigned long echo_start = millis();
     while(echo_count < packet_size) {
       if(bus_serial_->available()) {
         bus_serial_->read();
         echo_count++;
+      }
+      if(millis() - echo_start > timeout_ms_) {
+        last_error_ = ServoError::Timeout;
+        return false;
       }
     }
 
@@ -93,11 +99,11 @@ public:
     return true;
   }
 
-  bool read_response(uint8_t* response, int expected_size, int timeout_ms = 2) {
-    unsigned long start = millis();
+  bool read_response(uint8_t* response, int expected_size) {
+    unsigned long start_ms = millis();;
     
     // Wait for expected response size
-    while(bus_serial_->available() < expected_size && (millis() - start) < timeout_ms);
+    while(bus_serial_->available() < expected_size && millis()-start_ms < timeout_ms_);
     
     if(bus_serial_->available() < expected_size) {
       last_error_ = ServoError::Timeout;
