@@ -143,7 +143,7 @@ file: main.cpp
 - [x] Fix byte order inconsistency (Issue #4 under Self-Documentation)
 - [x] Add timeout to echo discard loop (Issue #2 under Efficiency)
 - [x] Reduce stack allocation (Issue #1 under Efficiency)
-- [ ] Define magic number enums/constants (Issue #1 under Self-Documentation)
+- [x] Define magic number enums/constants (Issue #1 under Self-Documentation)
 
 ### Phase 2: Code Quality
 - [ ] Extract checksum calculation helper
