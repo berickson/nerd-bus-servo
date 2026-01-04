@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <SCServo.h>
 
+#include <optional>
 #include <vector>
 
 #include "esp_rom_gpio.h"
@@ -11,8 +12,25 @@
 
 SCSCL legacy_servo_bus;
 
+enum class ServoError {
+  None = 0,
+  Timeout,
+  InvalidHeader,
+  ChecksumMismatch,
+  InvalidResponse,
+  InvalidParameter,
+  NoAck
+};
+
 class SCServoBus {
+private:
+  ServoError last_error_ = ServoError::None;
+
 public:
+  // Error state accessors
+  inline bool ok() const { return last_error_ == ServoError::None; }
+  inline ServoError last_error() const { return last_error_; }
+  inline void clear_error() { last_error_ = ServoError::None; }
 
   bool send_command(uint8_t id, uint8_t instruction, uint8_t* params = nullptr, int param_count = 0) {
 
@@ -61,6 +79,7 @@ public:
       }
     }
 
+    last_error_ = ServoError::None;
     return true;
   }
 
@@ -71,13 +90,15 @@ public:
     while(Serial1.available() < expected_size && (millis() - start) < timeout_ms);
     
     if(Serial1.available() < expected_size) {
-      return false;  // Timeout
+      last_error_ = ServoError::Timeout;
+      return false;
     }
     
     Serial1.readBytes(response, expected_size);
     
     // Validate header
     if(response[0] != 0xFF || response[1] != 0xFF) {
+      last_error_ = ServoError::InvalidHeader;
       return false;
     }
     
@@ -90,41 +111,54 @@ public:
     checksum = ~checksum;
     
     if(checksum != response[expected_size - 1]) {
-      return false;  // Checksum mismatch
-    }
-    
-    return true;
-  }
-
-  int read_position(uint8_t servo_id) {
-    uint8_t params[] = {56, 2};  // Address 56, read 2 bytes
-    send_command(servo_id, 0x02, params, 2);  // 0x02 = READ instruction
-    
-    uint8_t response[8];
-    if(!read_response(response, 8)) {
-      return -1;
-    }
-    
-    
-    // Extract position - response[5] is LOW byte, response[6] is HIGH byte
-    int position = response[5] << 8  | (response[6]);
-    return position;
-  }
-
-  bool ping(uint8_t ID) {
-    send_command(ID, 0x01);  // 0x01 = PING instruction, no params
-    
-    uint8_t response[6];
-    if(!read_response(response, 6)) {
+      last_error_ = ServoError::ChecksumMismatch;
       return false;
     }
     
-    return (response[2] == ID);  // Header already validated in custom_read_response
+    last_error_ = ServoError::None;
+    return true;
+  }
+
+  std::optional<int> read_position(uint8_t servo_id) {
+    uint8_t params[] = {56, 2};  // Address 56, read 2 bytes
+    if(!send_command(servo_id, 0x02, params, 2)) {  // 0x02 = READ instruction
+      return std::nullopt;
+    }
+    
+    uint8_t response[8];
+    if(!read_response(response, 8)) {
+      return std::nullopt;
+    }
+    
+    // Extract position - response[5] is LOW byte, response[6] is HIGH byte
+    int position = response[5] << 8  | (response[6]);
+    last_error_ = ServoError::None;
+    return position;
+  }
+
+  std::optional<uint8_t> ping(uint8_t ID) {
+    if(!send_command(ID, 0x01)) {  // 0x01 = PING instruction, no params
+      return std::nullopt;
+    }
+    
+    uint8_t response[6];
+    if(!read_response(response, 6)) {
+      return std::nullopt;
+    }
+    
+    if(response[2] != ID) {
+      last_error_ = ServoError::InvalidResponse;
+      return std::nullopt;
+    }
+    
+    last_error_ = ServoError::None;
+    return response[2];
   }
 
   bool write_pos(uint8_t servo_id, uint16_t position, uint16_t time_ms, uint16_t speed) {
-    legacy_servo_bus.WritePos(servo_id, position, time_ms, speed);
-    return true;
+    // legacy_servo_bus.WritePos(servo_id, position, time_ms, speed);
+    // last_error_ = ServoError::None;
+    // return true;
     // Write 6 bytes to address 42: position(2), time(2), speed(2)
     uint8_t params[7];
     params[0] = 42;  // Start address (SCSCL_GOAL_POSITION_L)
@@ -147,9 +181,11 @@ public:
     // Read ACK response
     uint8_t response[6];
     if(!read_response(response, 6)) {
+      last_error_ = ServoError::NoAck;
       return false;
     }
     
+    last_error_ = ServoError::None;
     return true;
   }
 
@@ -201,16 +237,30 @@ void setup() {
   for (auto servo_id : servo_ids ) {
     for (auto setpoint : setpoints) {
 
-      int start_position = servo_bus.read_position(servo_id);
-      Serial.printf("Moving servo_id %d from current position of %d to %d\n", servo_id, start_position, setpoint);
-      servo_bus.write_pos(servo_id, setpoint, 0, 300);
-      while(Serial1.available()) {
-        Serial1.read();
+      auto start_position = servo_bus.read_position(servo_id);
+      if(start_position) {
+        Serial.printf("Moving servo_id %d from current position of %d to %d\n", servo_id, *start_position, setpoint);
+      } else {
+        Serial.printf("Moving servo_id %d to %d (couldn't read start position)\n", servo_id, setpoint);
       }
+      servo_bus.write_pos(servo_id, setpoint, 0, 300);
+    // clear the rx
+    // if (Serial1.available()) {
+    //   Serial.println("Clearing extra rx before sending a command");
+    //   while (Serial1.available()) {
+    //     auto b = Serial1.read();
+    //     Serial.print(b, 16);
+    //   }
+    //   Serial.println();
+    // }
       delay(2000);
     }
-    int final_position = servo_bus.read_position(servo_id);
-    Serial.printf("servo_id %d now at %d\n", servo_id, final_position);
+    auto final_position = servo_bus.read_position(servo_id);
+    if(final_position) {
+      Serial.printf("servo_id %d now at %d\n", servo_id, *final_position);
+    } else {
+      Serial.printf("servo_id %d - couldn't read final position\n", servo_id);
+    }
   }
   
   Serial.println("\nDone!");
