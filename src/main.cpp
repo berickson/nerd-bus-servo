@@ -153,7 +153,16 @@ public:
 
 public:
 
-
+  // Helper method to calculate checksum
+  // Checksum formula: ~(ID + LENGTH + INSTRUCTION + PARAMETERS)
+  static uint8_t calculate_checksum(uint8_t id, uint8_t length, uint8_t instruction, 
+                                      const uint8_t* params = nullptr, int param_count = 0) {
+    uint8_t sum = id + length + instruction;
+    for(int i = 0; i < param_count; i++) {
+      sum += params[i];
+    }
+    return ~sum;
+  }
 
   // Serial configuration
   void set_serial(HardwareSerial* serial) { bus_serial_ = serial; }
@@ -195,12 +204,8 @@ public:
       packet[OFFSET_PARAMS + i] = params[i];
     }
     
-    // Calculate checksum: ~(ID + LENGTH + INSTRUCTION + PARAMETERS)
-    uint8_t checksum = id + packet[OFFSET_LENGTH] + instruction;
-    for(int i = 0; i < param_count; i++) {
-      checksum += params[i];
-    }
-    packet[OFFSET_PARAMS + param_count] = ~checksum;
+    // Calculate and append checksum
+    packet[OFFSET_PARAMS + param_count] = calculate_checksum(id, packet[OFFSET_LENGTH], instruction, params, param_count);
     
     int packet_size = MIN_PACKET_SIZE + param_count;
     
@@ -244,15 +249,17 @@ public:
       return false;
     }
     
-    // Validate checksum: ~(ID + LENGTH + INSTRUCTION + PARAMETERS)
-    uint8_t checksum = response[OFFSET_ID];
-    checksum += response[OFFSET_LENGTH];
-    for(int i = OFFSET_INSTRUCTION; i < expected_size - 1; i++) {
-      checksum += response[i];
-    }
-    checksum = ~checksum;
+    // Validate checksum
+    int param_count = expected_size - MIN_PACKET_SIZE;
+    uint8_t expected_checksum = calculate_checksum(
+      response[OFFSET_ID], 
+      response[OFFSET_LENGTH], 
+      response[OFFSET_INSTRUCTION],
+      param_count > 0 ? &response[OFFSET_PARAMS] : nullptr,
+      param_count
+    );
     
-    if(checksum != response[expected_size - 1]) {
+    if(expected_checksum != response[expected_size - 1]) {
       last_error_ = ServoError::ChecksumMismatch;
       return false;
     }

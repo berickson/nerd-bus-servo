@@ -146,7 +146,7 @@ file: main.cpp
 - [x] Define magic number enums/constants (Issue #1 under Self-Documentation)
 
 ### Phase 2: Code Quality
-- [ ] Extract checksum calculation helper
+- [x] Extract checksum calculation helper
 - [ ] Extract byte packing/unpacking helpers
 - [ ] Add class and method documentation
 - [ ] Improve variable naming
