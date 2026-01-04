@@ -12,21 +12,31 @@
 
 SCSCL legacy_servo_bus;
 
-enum class ServoError {
-  None = 0,
-  Timeout,
-  InvalidHeader,
-  ChecksumMismatch,
-  InvalidResponse,
-  InvalidParameter,
-  NoAck
-};
 
 class SCServoBus {
-private:
+public:
+  enum class ServoError {
+    None = 0,
+    Timeout,
+    InvalidHeader,
+    ChecksumMismatch,
+    InvalidResponse,
+    InvalidParameter,
+    NoAck
+  };
+
+
+  private:
   ServoError last_error_ = ServoError::None;
+  HardwareSerial* bus_serial_ = nullptr;
 
 public:
+
+
+
+  // Serial configuration
+  void set_serial(HardwareSerial* serial) { bus_serial_ = serial; }
+  
   // Error state accessors
   inline bool ok() const { return last_error_ == ServoError::None; }
   inline ServoError last_error() const { return last_error_; }
@@ -35,10 +45,10 @@ public:
   bool send_command(uint8_t id, uint8_t instruction, uint8_t* params = nullptr, int param_count = 0) {
 
     // clear the rx
-    if (Serial1.available()) {
+    if (bus_serial_->available()) {
       Serial.println("Clearing extra rx before sending a command");
-      while (Serial1.available()) {
-        auto b = Serial1.read();
+      while (bus_serial_->available()) {
+        auto b = bus_serial_->read();
         Serial.print(b, 16);
       }
       Serial.println();
@@ -68,13 +78,13 @@ public:
     int packet_size = 6 + param_count;
     
     // Send packet
-    Serial1.write(packet, packet_size);
+    bus_serial_->write(packet, packet_size);
     
     // Discard echo bytes as they arrive during transmission
     int echo_count = 0;
     while(echo_count < packet_size) {
-      if(Serial1.available()) {
-        Serial1.read();
+      if(bus_serial_->available()) {
+        bus_serial_->read();
         echo_count++;
       }
     }
@@ -83,18 +93,18 @@ public:
     return true;
   }
 
-  bool read_response(uint8_t* response, int expected_size, int timeout_ms = 100) {
+  bool read_response(uint8_t* response, int expected_size, int timeout_ms = 2) {
     unsigned long start = millis();
     
     // Wait for expected response size
-    while(Serial1.available() < expected_size && (millis() - start) < timeout_ms);
+    while(bus_serial_->available() < expected_size && (millis() - start) < timeout_ms);
     
-    if(Serial1.available() < expected_size) {
+    if(bus_serial_->available() < expected_size) {
       last_error_ = ServoError::Timeout;
       return false;
     }
     
-    Serial1.readBytes(response, expected_size);
+    bus_serial_->readBytes(response, expected_size);
     
     // Validate header
     if(response[0] != 0xFF || response[1] != 0xFF) {
@@ -170,10 +180,6 @@ public:
     params[5] = (speed >> 8) & 0xFF;          // Speed high byte
     params[6] = (speed) & 0xFF;               // Speed low byte
     
-    Serial.printf("WritePos: ID=%d, Pos=%d, Time=%d, Speed=%d\n", servo_id, position, time_ms, speed);
-    Serial.printf("  Params: addr=42, pos=0x%02X%02X, time=0x%02X%02X, speed=0x%02X%02X\n",
-      params[2], params[1], params[4], params[3], params[6], params[5]);
-    
     if(!send_command(servo_id, 0x03, params, 7)) {  // 0x03 = WRITE instruction, 7 bytes total (addr + 6 data bytes)
       return false;
     }
@@ -214,6 +220,7 @@ void setup() {
   Serial.println("=== Back and Forth Test ===");
 
   Serial1.begin(1000000, SERIAL_8N1, pin_servo_rx, pin_servo_tx);
+  servo_bus.set_serial(&Serial1);
 
   // gpio_config_t io_conf = {};
   // io_conf.pin_bit_mask = (1ULL << pin_servo_tx);
@@ -228,7 +235,7 @@ void setup() {
 
   legacy_servo_bus.pSerial = &Serial1;
   delay(500);
-  scan_ids(1,10);
+  scan_ids(1,100);
 
 
   std::vector<uint32_t> servo_ids = {1,2,3};
