@@ -140,8 +140,9 @@ public:
       return std::nullopt;
     }
     
-    // Extract position - response[5] is LOW byte, response[6] is HIGH byte
-    int position = response[5] << 8  | (response[6]);
+    // Extract position - SC series (potentiometer): HIGH byte first, then LOW byte
+    // response[5] is HIGH byte, response[6] is LOW byte
+    int position = (response[5] << 8) | response[6];
     last_error_ = ServoError::None;
     return position;
   }
@@ -172,7 +173,7 @@ public:
     // Write 6 bytes to address 42: position(2), time(2), speed(2)
     uint8_t params[7];
     params[0] = 42;  // Start address (SCSCL_GOAL_POSITION_L)
-    // Host2SCS writes LOW byte first, then HIGH byte (little endian)
+    // SC series (potentiometer): HIGH byte first, then LOW byte
     params[1] = (position >> 8) & 0xFF;       // Position high byte
     params[2] = (position) & 0xFF;            // Position low byte
     params[3] = (time_ms >> 8) & 0xFF;        // Time high byte
@@ -237,40 +238,46 @@ void setup() {
   delay(500);
   scan_ids(1,100);
 
-
-  std::vector<uint32_t> servo_ids = {1,2,3};
-  std::vector<uint32_t> setpoints = {50,200};
-
-  for (auto servo_id : servo_ids ) {
-    for (auto setpoint : setpoints) {
-
-      auto start_position = servo_bus.read_position(servo_id);
-      if(start_position) {
-        Serial.printf("Moving servo_id %d from current position of %d to %d\n", servo_id, *start_position, setpoint);
-      } else {
-        Serial.printf("Moving servo_id %d to %d (couldn't read start position)\n", servo_id, setpoint);
+  // Byte order verification test - move servo #2 slowly and read position continuously
+  uint8_t test_servo = 2;
+  uint16_t start_pos = 500;
+  uint16_t end_pos = 3500;
+  uint16_t speed = 100;  // Very slow speed for long movement
+  
+  Serial.printf("\n=== Byte Order Verification Test ===\n");
+  Serial.printf("Moving servo #%d from %d to %d at speed %d\n", test_servo, start_pos, end_pos, speed);
+  Serial.printf("Expected position range: %d to %d (should increase smoothly)\n\n", start_pos, end_pos);
+  
+  // Move to start position first
+  servo_bus.write_pos(test_servo, start_pos, 0, 500);
+  delay(2000);
+  
+  // Start slow movement
+  servo_bus.write_pos(test_servo, end_pos, 0, speed);
+  
+  // Read position continuously during movement
+  unsigned long start_time = millis();
+  int sample_count = 0;
+  int last_position = -1;
+  
+  while (millis() - start_time < 35000) {  // Read for 35 seconds
+    auto position = servo_bus.read_position(test_servo);
+    if (position) {
+      sample_count++;
+      int delta = last_position >= 0 ? (*position - last_position) : 0;
+      Serial.printf("Sample %3d @ %5lu ms: Position = %4d", sample_count, millis() - start_time, *position);
+      if (last_position >= 0) {
+        Serial.printf(" (delta: %+5d)", delta);
       }
-      servo_bus.write_pos(servo_id, setpoint, 0, 300);
-    // clear the rx
-    // if (Serial1.available()) {
-    //   Serial.println("Clearing extra rx before sending a command");
-    //   while (Serial1.available()) {
-    //     auto b = Serial1.read();
-    //     Serial.print(b, 16);
-    //   }
-    //   Serial.println();
-    // }
-      delay(2000);
-    }
-    auto final_position = servo_bus.read_position(servo_id);
-    if(final_position) {
-      Serial.printf("servo_id %d now at %d\n", servo_id, *final_position);
+      Serial.println();
+      last_position = *position;
     } else {
-      Serial.printf("servo_id %d - couldn't read final position\n", servo_id);
+      Serial.printf("Sample %3d @ %5lu ms: Read failed\n", sample_count, millis() - start_time);
     }
+    delay(200);  // Sample every 200ms
   }
   
-  Serial.println("\nDone!");
+  Serial.println("\n=== Test Complete ===");
 }
 
 void loop() {}
