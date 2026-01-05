@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <SCServo.h>
 
 #include <optional>
 #include <vector>
@@ -10,8 +9,6 @@
 #define pin_servo_tx 8
 #define pin_servo_rx 18
 
-SCSCL legacy_servo_bus;
-
 
 class SCServoBus {
 public:
@@ -20,6 +17,12 @@ public:
     header_byte_1 = 0xFF,
     header_byte_2 = 0xFF,
     broadcast_id = 0xFE
+  };
+  
+  // Servo type for byte order
+  enum class ServoType {
+    SC,   // SCSCL series - big-endian (HIGH, LOW)
+    STS   // SMS_STS series - little-endian (LOW, HIGH)
   };
   
   // Protocol size constants
@@ -109,16 +112,45 @@ public:
   HardwareSerial* bus_serial_ = nullptr;
   uint32_t timeout_ms_ = 10;
   static const uint32_t max_servo_count = 10; // maximum servo count supported at once
+  ServoType servo_type_ = ServoType::STS;  // Default to STS
   
-  // Pack 16-bit value into big-endian byte array (HIGH byte first)
+  // Pack 16-bit value into big-endian byte array (HIGH byte first) - for SC servos
   void pack_uint16_be(uint8_t* buffer, uint16_t value) {
     buffer[0] = (value >> 8) & 0xFF;  // HIGH byte
     buffer[1] = value & 0xFF;         // LOW byte
   }
   
-  // Unpack 16-bit value from big-endian byte array (HIGH byte first)
+  // Unpack 16-bit value from big-endian byte array (HIGH byte first) - for SC servos
   uint16_t unpack_uint16_be(const uint8_t* buffer) {
     return (buffer[0] << 8) | buffer[1];  // HIGH | LOW
+  }
+
+  // Pack 16-bit value into little-endian byte array (LOW byte first) - for STS servos
+  void pack_uint16_le(uint8_t* buffer, uint16_t value) {
+    buffer[0] = value & 0xFF;         // LOW byte
+    buffer[1] = (value >> 8) & 0xFF;  // HIGH byte
+  }
+  
+  // Unpack 16-bit value from little-endian byte array (LOW byte first) - for STS servos
+  uint16_t unpack_uint16_le(const uint8_t* buffer) {
+    return buffer[0] | (buffer[1] << 8);  // LOW | HIGH
+  }
+
+  // Convenience wrappers that use the configured servo type
+  void pack_uint16(uint8_t* buffer, uint16_t value) {
+    if (servo_type_ == ServoType::STS) {
+      pack_uint16_le(buffer, value);
+    } else {
+      pack_uint16_be(buffer, value);
+    }
+  }
+
+  uint16_t unpack_uint16(const uint8_t* buffer) {
+    if (servo_type_ == ServoType::STS) {
+      return unpack_uint16_le(buffer);
+    } else {
+      return unpack_uint16_be(buffer);
+    }
   }
 
 public:
@@ -136,6 +168,11 @@ public:
 
   // Serial configuration
   void set_serial(HardwareSerial* serial) { bus_serial_ = serial; }
+  
+  // Set servo type (call this before any operations)
+  void set_servo_type(ServoType type) { 
+    servo_type_ = type;
+  }
   
   // Error state accessors
   inline bool ok() const { return last_error_ == ServoError::none; }
@@ -253,8 +290,8 @@ public:
       return std::nullopt;
     }
     
-    // Extract position - SC series (potentiometer): HIGH byte first, then LOW byte
-    int position = unpack_uint16_be(&response[5]);
+    // Extract position using configured byte order
+    int position = unpack_uint16(&response[5]);
     last_error_ = ServoError::none;
     return position;
   }
@@ -282,10 +319,10 @@ public:
     // Write 6 bytes starting at goal_position_l: position(2), time(2), speed(2)
     uint8_t parameters[7];
     parameters[0] = to_byte(Register::goal_position_l);
-    // SC series (potentiometer): HIGH byte first, then LOW byte
-    pack_uint16_be(&parameters[1], position);
-    pack_uint16_be(&parameters[3], time_ms);
-    pack_uint16_be(&parameters[5], speed);
+    // Use configured byte order
+    pack_uint16(&parameters[1], position);
+    pack_uint16(&parameters[3], time_ms);
+    pack_uint16(&parameters[5], speed);
     
     if(!send_command(servo_id, to_byte(Instruction::write), parameters, 7)) {
       return false;
@@ -300,6 +337,70 @@ public:
     
     last_error_ = ServoError::none;
     return true;
+  }
+
+  bool write_id(uint8_t current_id, uint8_t new_id) {
+    // Write new ID to EEPROM register 5
+    uint8_t parameters[2];
+    parameters[0] = to_byte(Register::id);
+    parameters[1] = new_id;
+    
+    if(!send_command(current_id, to_byte(Instruction::write), parameters, 2)) {
+      return false;
+    }
+    
+    // Read ACK response
+    uint8_t response[MIN_PACKET_SIZE];
+    if(!read_response(response, MIN_PACKET_SIZE)) {
+      last_error_ = ServoError::no_ack;
+      return false;
+    }
+    
+    Serial.printf("Changed servo ID from %d to %d\n", current_id, new_id);
+    last_error_ = ServoError::none;
+    return true;
+  }
+
+  // Read identifying information from servo
+  struct ServoInfo {
+    uint16_t version;
+    uint16_t min_angle;
+    uint16_t max_angle;
+    bool valid;
+  };
+
+  ServoInfo read_info(uint8_t servo_id) {
+    ServoInfo info = {0, 0, 0, false};
+    
+    // Read version (registers 3-4, 2 bytes)
+    uint8_t ver_params[] = {to_byte(Register::version_l), 2};
+    if(send_command(servo_id, to_byte(Instruction::read), ver_params, 2)) {
+      uint8_t ver_response[8];
+      if(read_response(ver_response, 8)) {
+        info.version = unpack_uint16(&ver_response[5]);
+      }
+    }
+    
+    // Read min angle limit (registers 9-10, 2 bytes)
+    uint8_t min_params[] = {to_byte(Register::min_angle_limit_l), 2};
+    if(send_command(servo_id, to_byte(Instruction::read), min_params, 2)) {
+      uint8_t min_response[8];
+      if(read_response(min_response, 8)) {
+        info.min_angle = unpack_uint16(&min_response[5]);
+      }
+    }
+    
+    // Read max angle limit (registers 11-12, 2 bytes)
+    uint8_t max_params[] = {to_byte(Register::max_angle_limit_l), 2};
+    if(send_command(servo_id, to_byte(Instruction::read), max_params, 2)) {
+      uint8_t max_response[8];
+      if(read_response(max_response, 8)) {
+        info.max_angle = unpack_uint16(&max_response[5]);
+        info.valid = true;
+      }
+    }
+    
+    return info;
   }
 
   // Sync write positions to multiple servos at once
@@ -345,10 +446,10 @@ public:
       packet[offset++] = servo_ids[i];
       checksum += servo_ids[i];
       
-      // Pack position, time, speed (big-endian for SCSCL)
-      pack_uint16_be(&packet[offset], positions[i]);
-      pack_uint16_be(&packet[offset + 2], times[i]);
-      pack_uint16_be(&packet[offset + 4], speeds[i]);
+      // Pack using configured byte order
+      pack_uint16(&packet[offset], positions[i]);
+      pack_uint16(&packet[offset + 2], times[i]);
+      pack_uint16(&packet[offset + 4], speeds[i]);
       
       for (int j = 0; j < POSITION_DATA_SIZE; j++) {
         checksum += packet[offset + j];
@@ -421,146 +522,179 @@ void scan_ids(uint32_t start_id, uint32_t end_id) {
   Serial.println("done");
 }
 
-void setup() {
-  Serial.begin(1000000);
-  delay(2000);
-  Serial.println("=== Back and Forth Test ===");
+void demonstrate_coordinated_moving() {
+  Serial.println("=== Coordinated Servo Movement Test ===");
 
-  Serial1.begin(1000000, SERIAL_8N1, pin_servo_rx, pin_servo_tx);
-  servo_bus.set_serial(&Serial1);
-
-  legacy_servo_bus.pSerial = &Serial1;
-  delay(500);
-  scan_ids(1,100);
-
-  // Test sync_write with all 3 servos - move back and forth
-  Serial.println("\n=== Testing Sync Write ===");
-  std::vector<uint8_t> all_ids = {1, 2, 3};
+  // Servos 1, 2, 3 are SC (big-endian)
+  // Servo 4 is STS (little-endian)
   
-  // Define waypoints (servos have range ~0-1000)
-  std::vector<uint16_t> positions_left = {100, 100, 100};
-  std::vector<uint16_t> positions_center = {500, 500, 500};
-  std::vector<uint16_t> positions_right = {900, 900, 900};
-  std::vector<uint16_t> move_times = {1500, 1500, 1500};  // 1.5 seconds per move
-  std::vector<uint16_t> speeds = {0, 0, 0};  // Max speed
+  Serial.println("\n=== Reading servo ranges ===");
   
-  // Move through sequence 3 times
-  for (int cycle = 1; cycle <= 3; cycle++) {
-    Serial.printf("\n--- Cycle %d/3 ---\n", cycle);
-    
-    // Move to left
-    Serial.println("Moving all servos to LEFT (100)...");
-    servo_bus.sync_write_positions(all_ids, positions_left, move_times, speeds);
-    delay(500);
-    for (int i = 0; i < 5; i++) {
-      Serial.printf("  t=%dms: ", i * 300);
-      for (auto id : all_ids) {
-        auto pos = servo_bus.read_position(id);
-        if (pos) Serial.printf("#%d=%d  ", id, *pos);
-      }
-      Serial.println();
-      delay(300);
-    }
-    
-    // Move to center
-    Serial.println("Moving all servos to CENTER (500)...");
-    servo_bus.sync_write_positions(all_ids, positions_center, move_times, speeds);
-    delay(500);
-    for (int i = 0; i < 5; i++) {
-      Serial.printf("  t=%dms: ", i * 300);
-      for (auto id : all_ids) {
-        auto pos = servo_bus.read_position(id);
-        if (pos) Serial.printf("#%d=%d  ", id, *pos);
-      }
-      Serial.println();
-      delay(300);
-    }
-    
-    // Move to right
-    Serial.println("Moving all servos to RIGHT (900)...");
-    servo_bus.sync_write_positions(all_ids, positions_right, move_times, speeds);
-    delay(500);
-    for (int i = 0; i < 5; i++) {
-      Serial.printf("  t=%dms: ", i * 300);
-      for (auto id : all_ids) {
-        auto pos = servo_bus.read_position(id);
-        if (pos) Serial.printf("#%d=%d  ", id, *pos);
-      }
-      Serial.println();
-      delay(300);
-    }
-    
-    // Move back to center
-    Serial.println("Moving all servos back to CENTER (500)...");
-    servo_bus.sync_write_positions(all_ids, positions_center, move_times, speeds);
-    delay(500);
-    for (int i = 0; i < 5; i++) {
-      Serial.printf("  t=%dms: ", i * 300);
-      for (auto id : all_ids) {
-        auto pos = servo_bus.read_position(id);
-        if (pos) Serial.printf("#%d=%d  ", id, *pos);
-      }
-      Serial.println();
-      delay(300);
-    }
-  }
+  std::vector<uint8_t> sc_ids = {1, 2, 3};
+  std::vector<uint8_t> sts_ids = {4};
+  std::vector<uint16_t> sc_mins, sc_maxs, sts_mins, sts_maxs;
   
-  Serial.println("\n=== Sync Write Test Complete ===");
-
-  /*
-  // Test sync_read with multiple servos
-  Serial.println("\n=== Testing Sync Read ===");
-  std::vector<uint8_t> test_servos = {1, 2};
-  auto positions = servo_bus.sync_read_positions(test_servos);
-  for (size_t i = 0; i < test_servos.size(); i++) {
-    if (positions[i]) {
-      Serial.printf("Servo #%d position: %d\n", test_servos[i], *positions[i]);
+  // Read SC servo ranges
+  servo_bus.set_servo_type(SCServoBus::ServoType::SC);
+  Serial.println("SC servos (1, 2, 3):");
+  for (auto id : sc_ids) {
+    auto info = servo_bus.read_info(id);
+    if (info.valid) {
+      Serial.printf("  Servo #%d: min=%d, max=%d\n", id, info.min_angle, info.max_angle);
+      sc_mins.push_back(info.min_angle);
+      sc_maxs.push_back(info.max_angle);
     } else {
-      Serial.printf("Servo #%d: read failed\n", test_servos[i]);
+      Serial.printf("  Servo #%d: Failed to read info\n", id);
+      return;
     }
   }
-
-  // Byte order verification test - move servo #2 slowly and read position continuously
-  uint8_t test_servo = 2;
-  uint16_t start_position = 500;
-  uint16_t end_position = 3500;
-  uint16_t speed = 100;  // Very slow speed for long movement
   
-  Serial.printf("\n=== Byte Order Verification Test ===\n");
-  Serial.printf("Moving servo #%d from %d to %d at speed %d\n", test_servo, start_position, end_position, speed);
-  Serial.printf("Expected position range: %d to %d (should increase smoothly)\n\n", start_position, end_position);
+  // Read STS servo ranges
+  servo_bus.set_servo_type(SCServoBus::ServoType::STS);
+  Serial.println("STS servos (4):");
+  for (auto id : sts_ids) {
+    auto info = servo_bus.read_info(id);
+    if (info.valid) {
+      Serial.printf("  Servo #%d: min=%d, max=%d\n", id, info.min_angle, info.max_angle);
+      sts_mins.push_back(info.min_angle);
+      sts_maxs.push_back(info.max_angle);
+    } else {
+      Serial.printf("  Servo #%d: Failed to read info\n", id);
+      return;
+    }
+  }
   
-  // Move to start position first
-  servo_bus.write_position(test_servo, start_position, 0, 500);
-  delay(2000);
+  uint16_t target_time = 5000;  // 5 seconds target time
   
-  // Start slow movement
-  servo_bus.write_position(test_servo, end_position, 0, speed);
+  Serial.println("\n=== Moving all servos from min to max in 5 seconds ===");
   
-  // Read position continuously during movement
+  // Calculate speeds based on distance to ensure same duration
+  // Speed units are in position units per second
+  std::vector<uint16_t> sc_speeds, sts_speeds;
+  std::vector<uint16_t> sc_times, sts_times;
+  
+  for (size_t i = 0; i < sc_ids.size(); i++) {
+    uint16_t distance = sc_maxs[i] - sc_mins[i];
+    // Speed = distance / time (in seconds)
+    uint16_t spd = (distance * 1000) / target_time;  // units per second
+    sc_speeds.push_back(spd);
+    sc_times.push_back(target_time);
+    Serial.printf("  Servo #%d: distance=%d, speed=%d units/sec\n", sc_ids[i], distance, spd);
+  }
+  
+  for (size_t i = 0; i < sts_ids.size(); i++) {
+    uint16_t distance = sts_maxs[i] - sts_mins[i];
+    uint16_t spd = (distance * 1000) / target_time;  // units per second
+    sts_speeds.push_back(spd);
+    sts_times.push_back(target_time);
+    Serial.printf("  Servo #%d: distance=%d, speed=%d units/sec\n", sts_ids[i], distance, spd);
+  }
+  
+  // Move SC servos to their max positions
+  servo_bus.set_servo_type(SCServoBus::ServoType::SC);
+  servo_bus.sync_write_positions(sc_ids, sc_maxs, sc_times, sc_speeds);
+  
+  // Move STS servo to its max position
+  servo_bus.set_servo_type(SCServoBus::ServoType::STS);
+  servo_bus.sync_write_positions(sts_ids, sts_maxs, sts_times, sts_speeds);
+  
+  Serial.println("\nMonitoring positions (reading 2x per second):");
+  Serial.println("Time(ms)  | Servo #1 | Servo #2 | Servo #3 | Servo #4");
+  Serial.println("----------|----------|----------|----------|----------");
+  
   unsigned long start_time = millis();
-  int sample_count = 0;
-  int last_position = -1;
+  unsigned long duration = target_time + 1000;  // Add 1 second buffer
   
-  while (millis() - start_time < 35000) {  // Read for 35 seconds
-    auto position = servo_bus.read_position(test_servo);
-    if (position) {
-      sample_count++;
-      int delta = last_position >= 0 ? (*position - last_position) : 0;
-      Serial.printf("Sample %3d @ %5lu ms: Position = %4d", sample_count, millis() - start_time, *position);
-      if (last_position >= 0) {
-        Serial.printf(" (delta: %+5d)", delta);
+  while (millis() - start_time < duration) {
+    unsigned long t = millis() - start_time;
+    Serial.printf("%8lu  |", t);
+    
+    // Read SC servos
+    servo_bus.set_servo_type(SCServoBus::ServoType::SC);
+    for (auto id : sc_ids) {
+      auto pos = servo_bus.read_position(id);
+      if (pos) {
+        Serial.printf(" %8d |", *pos);
+      } else {
+        Serial.printf("     FAIL |");
       }
-      Serial.println();
-      last_position = *position;
-    } else {
-      Serial.printf("Sample %3d @ %5lu ms: Read failed\n", sample_count, millis() - start_time);
     }
-    delay(200);  // Sample every 200ms
+    
+    // Read STS servo
+    servo_bus.set_servo_type(SCServoBus::ServoType::STS);
+    for (auto id : sts_ids) {
+      auto pos = servo_bus.read_position(id);
+      if (pos) {
+        Serial.printf(" %8d", *pos);
+      } else {
+        Serial.printf("     FAIL");
+      }
+    }
+    Serial.println();
+    
+    delay(500);  // 2x per second
+  }
+  
+  Serial.println("\n=== Moving back to min ===");
+  
+  // Move SC servos back to their min positions
+  servo_bus.set_servo_type(SCServoBus::ServoType::SC);
+  servo_bus.sync_write_positions(sc_ids, sc_mins, sc_times, sc_speeds);
+  
+  // Move STS servo back to its min position
+  servo_bus.set_servo_type(SCServoBus::ServoType::STS);
+  servo_bus.sync_write_positions(sts_ids, sts_mins, sts_times, sts_speeds);
+  
+  Serial.println("\nMonitoring positions (reading 2x per second):");
+  Serial.println("Time(ms)  | Servo #1 | Servo #2 | Servo #3 | Servo #4");
+  Serial.println("----------|----------|----------|----------|----------");
+  
+  start_time = millis();
+  
+  while (millis() - start_time < duration) {
+    unsigned long t = millis() - start_time;
+    Serial.printf("%8lu  |", t);
+    
+    // Read SC servos
+    servo_bus.set_servo_type(SCServoBus::ServoType::SC);
+    for (auto id : sc_ids) {
+      auto pos = servo_bus.read_position(id);
+      if (pos) {
+        Serial.printf(" %8d |", *pos);
+      } else {
+        Serial.printf("     FAIL |");
+      }
+    }
+    
+    // Read STS servo
+    servo_bus.set_servo_type(SCServoBus::ServoType::STS);
+    for (auto id : sts_ids) {
+      auto pos = servo_bus.read_position(id);
+      if (pos) {
+        Serial.printf(" %8d", *pos);
+      } else {
+        Serial.printf("     FAIL");
+      }
+    }
+    Serial.println();
+    
+    delay(500);  // 2x per second
   }
   
   Serial.println("\n=== Test Complete ===");
-  */
+  Serial.println("\nNote: Had to call set_servo_type() multiple times and do separate");
+  Serial.println("sync_write calls for SC vs STS servos. This is awkward with mixed types!");
+
+}
+
+void setup() {
+  Serial.begin(1000000);
+  delay(2000);
+
+  Serial1.begin(1000000, SERIAL_8N1, pin_servo_rx, pin_servo_tx);
+  servo_bus.set_serial(&Serial1);
+  demonstrate_coordinated_moving();
+  
 }
 
 void loop() {}
