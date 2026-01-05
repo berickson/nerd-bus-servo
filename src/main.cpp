@@ -24,12 +24,14 @@ public:
   static constexpr int INSTRUCTION_OVERHEAD = 2;  // instruction byte + params (length field = instruction + params)
   
   // Packet field offsets
-  static constexpr int OFFSET_HEADER1 = 0;
-  static constexpr int OFFSET_HEADER2 = 1;
-  static constexpr int OFFSET_ID = 2;
-  static constexpr int OFFSET_LENGTH = 3;
-  static constexpr int OFFSET_INSTRUCTION = 4;
-  static constexpr int OFFSET_PARAMS = 5;
+  enum class PacketOffset : int {
+    Header1 = 0,
+    Header2 = 1,
+    Id = 2,
+    Length = 3,
+    Instruction = 4,
+    Parameters = 5
+  };
 
   // Servo memory register addresses (from SCSCL.h)
   enum class Register : uint8_t {
@@ -92,6 +94,10 @@ public:
     NoAck
   };
 
+  // Helper functions to convert enums to underlying types
+  static constexpr uint8_t to_byte(Register r) { return static_cast<uint8_t>(r); }
+  static constexpr uint8_t to_byte(Instruction i) { return static_cast<uint8_t>(i); }
+  static constexpr int to_index(PacketOffset offset) { return static_cast<int>(offset); }
 
   private:
   ServoError last_error_ = ServoError::None;
@@ -115,10 +121,10 @@ public:
   // Helper method to calculate checksum
   // Checksum formula: ~(ID + LENGTH + INSTRUCTION + PARAMETERS)
   static uint8_t calculate_checksum(uint8_t id, uint8_t length, uint8_t instruction, 
-                                      const uint8_t* params = nullptr, int param_count = 0) {
+                                      const uint8_t* parameters = nullptr, int parameter_count = 0) {
     uint8_t sum = id + length + instruction;
-    for(int i = 0; i < param_count; i++) {
-      sum += params[i];
+    for(int i = 0; i < parameter_count; i++) {
+      sum += parameters[i];
     }
     return ~sum;
   }
@@ -131,9 +137,9 @@ public:
   inline ServoError last_error() const { return last_error_; }
   inline void clear_error() { last_error_ = ServoError::None; }
 
-  bool send_command(uint8_t id, uint8_t instruction, uint8_t* params = nullptr, int param_count = 0) {
-    const int max_param_count = max_servo_count + 2;
-    if (param_count > max_param_count) {
+  bool send_command(uint8_t id, uint8_t instruction, uint8_t* parameters = nullptr, int parameter_count = 0) {
+    const int max_parameter_count = max_servo_count + 2;
+    if (parameter_count > max_parameter_count) {
       last_error_ = ServoError::InvalidParameter;
       return false;
     }
@@ -152,21 +158,21 @@ public:
     uint8_t packet[MAX_PACKET_SIZE];
     
     // Build packet
-    packet[OFFSET_HEADER1] = PACKET_HEADER_BYTE_1;
-    packet[OFFSET_HEADER2] = PACKET_HEADER_BYTE_2;
-    packet[OFFSET_ID] = id;
-    packet[OFFSET_LENGTH] = INSTRUCTION_OVERHEAD + param_count;  // LENGTH = instruction byte + params
-    packet[OFFSET_INSTRUCTION] = instruction;
+    packet[to_index(PacketOffset::Header1)] = PACKET_HEADER_BYTE_1;
+    packet[to_index(PacketOffset::Header2)] = PACKET_HEADER_BYTE_2;
+    packet[to_index(PacketOffset::Id)] = id;
+    packet[to_index(PacketOffset::Length)] = INSTRUCTION_OVERHEAD + parameter_count;  // LENGTH = instruction byte + parameters
+    packet[to_index(PacketOffset::Instruction)] = instruction;
     
     // Copy parameters
-    for(int i = 0; i < param_count; i++) {
-      packet[OFFSET_PARAMS + i] = params[i];
+    for(int i = 0; i < parameter_count; i++) {
+      packet[to_index(PacketOffset::Parameters) + i] = parameters[i];
     }
     
     // Calculate and append checksum
-    packet[OFFSET_PARAMS + param_count] = calculate_checksum(id, packet[OFFSET_LENGTH], instruction, params, param_count);
+    packet[to_index(PacketOffset::Parameters) + parameter_count] = calculate_checksum(id, packet[to_index(PacketOffset::Length)], instruction, parameters, parameter_count);
     
-    int packet_size = MIN_PACKET_SIZE + param_count;
+    int packet_size = MIN_PACKET_SIZE + parameter_count;
     
     // Send packet
     bus_serial_->write(packet, packet_size);
@@ -203,19 +209,19 @@ public:
     bus_serial_->readBytes(response, expected_size);
     
     // Validate header
-    if(response[OFFSET_HEADER1] != PACKET_HEADER_BYTE_1 || response[OFFSET_HEADER2] != PACKET_HEADER_BYTE_2) {
+    if(response[to_index(PacketOffset::Header1)] != PACKET_HEADER_BYTE_1 || response[to_index(PacketOffset::Header2)] != PACKET_HEADER_BYTE_2) {
       last_error_ = ServoError::InvalidHeader;
       return false;
     }
     
     // Validate checksum
-    int param_count = expected_size - MIN_PACKET_SIZE;
+    int parameter_count = expected_size - MIN_PACKET_SIZE;
     uint8_t expected_checksum = calculate_checksum(
-      response[OFFSET_ID], 
-      response[OFFSET_LENGTH], 
-      response[OFFSET_INSTRUCTION],
-      param_count > 0 ? &response[OFFSET_PARAMS] : nullptr,
-      param_count
+      response[to_index(PacketOffset::Id)], 
+      response[to_index(PacketOffset::Length)], 
+      response[to_index(PacketOffset::Instruction)],
+      parameter_count > 0 ? &response[to_index(PacketOffset::Parameters)] : nullptr,
+      parameter_count
     );
     
     if(expected_checksum != response[expected_size - 1]) {
@@ -228,8 +234,8 @@ public:
   }
 
   std::optional<int> read_position(uint8_t servo_id) {
-    uint8_t params[] = {static_cast<uint8_t>(Register::PresentPositionL), 2};  // Read current position (2 bytes)
-    if(!send_command(servo_id, static_cast<uint8_t>(Instruction::Read), params, 2)) {
+    uint8_t parameters[] = {to_byte(Register::PresentPositionL), 2};  // Read current position (2 bytes)
+    if(!send_command(servo_id, to_byte(Instruction::Read), parameters, 2)) {
       return std::nullopt;
     }
     
@@ -244,8 +250,8 @@ public:
     return position;
   }
 
-  std::optional<uint8_t> ping(uint8_t ID) {
-    if(!send_command(ID, static_cast<uint8_t>(Instruction::Read))) {  // Read servo ID register
+  std::optional<uint8_t> ping(uint8_t servo_id) {
+    if(!send_command(servo_id, to_byte(Instruction::Read))) {  // Read servo ID register
       return std::nullopt;
     }
     
@@ -254,30 +260,30 @@ public:
       return std::nullopt;
     }
     
-    if(response[OFFSET_ID] != ID) {
+    if(response[to_index(PacketOffset::Id)] != servo_id) {
       last_error_ = ServoError::InvalidResponse;
       return std::nullopt;
     }
     
     last_error_ = ServoError::None;
-    return response[OFFSET_ID];
+    return response[to_index(PacketOffset::Id)];
   }
 
-  bool write_pos(uint8_t servo_id, uint16_t position, uint16_t time_ms, uint16_t speed) {
+  bool write_position(uint8_t servo_id, uint16_t position, uint16_t time_ms, uint16_t speed) {
     // Write 6 bytes starting at GoalPositionL: position(2), time(2), speed(2)
-    uint8_t params[7];
-    params[0] = static_cast<uint8_t>(Register::GoalPositionL);
+    uint8_t parameters[7];
+    parameters[0] = to_byte(Register::GoalPositionL);
     // SC series (potentiometer): HIGH byte first, then LOW byte
-    pack_uint16_be(&params[1], position);
-    pack_uint16_be(&params[3], time_ms);
-    pack_uint16_be(&params[5], speed);
+    pack_uint16_be(&parameters[1], position);
+    pack_uint16_be(&parameters[3], time_ms);
+    pack_uint16_be(&parameters[5], speed);
     
-    Serial.printf("write_pos: pos=%d (0x%02X %02X), time=%d (0x%02X %02X), speed=%d (0x%02X %02X)\n",
-                  position, params[1], params[2], 
-                  time_ms, params[3], params[4],
-                  speed, params[5], params[6]);
+    Serial.printf("write_position: position=%d (0x%02X %02X), time=%d (0x%02X %02X), speed=%d (0x%02X %02X)\n",
+                  position, parameters[1], parameters[2], 
+                  time_ms, parameters[3], parameters[4],
+                  speed, parameters[5], parameters[6]);
     
-    if(!send_command(servo_id, static_cast<uint8_t>(Instruction::Write), params, 7)) {
+    if(!send_command(servo_id, to_byte(Instruction::Write), parameters, 7)) {
       return false;
     }
     
@@ -325,20 +331,20 @@ void setup() {
 
   // Byte order verification test - move servo #2 slowly and read position continuously
   uint8_t test_servo = 2;
-  uint16_t start_pos = 500;
-  uint16_t end_pos = 3500;
+  uint16_t start_position = 500;
+  uint16_t end_position = 3500;
   uint16_t speed = 100;  // Very slow speed for long movement
   
   Serial.printf("\n=== Byte Order Verification Test ===\n");
-  Serial.printf("Moving servo #%d from %d to %d at speed %d\n", test_servo, start_pos, end_pos, speed);
-  Serial.printf("Expected position range: %d to %d (should increase smoothly)\n\n", start_pos, end_pos);
+  Serial.printf("Moving servo #%d from %d to %d at speed %d\n", test_servo, start_position, end_position, speed);
+  Serial.printf("Expected position range: %d to %d (should increase smoothly)\n\n", start_position, end_position);
   
   // Move to start position first
-  servo_bus.write_pos(test_servo, start_pos, 0, 500);
+  servo_bus.write_position(test_servo, start_position, 0, 500);
   delay(2000);
   
   // Start slow movement
-  servo_bus.write_pos(test_servo, end_pos, 0, speed);
+  servo_bus.write_position(test_servo, end_position, 0, speed);
   
   // Read position continuously during movement
   unsigned long start_time = millis();
