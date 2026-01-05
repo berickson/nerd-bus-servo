@@ -71,66 +71,15 @@ public:
     PresentCurrentH = 70
   };
 
-  enum class Command : uint8_t {
-    MoveTimeWrite = 1,
-    MoveTimeRead = 2,
-    MoveTimeWaitWrite = 7,
-    MoveTimeWaitRead = 8,
-    MoveStart = 11,
-    MoveStop = 12,
-    IdWrite = 13,
-    IdRead = 14,
-    AngleOffsetAdjust = 17,
-    AngleOffsetWrite = 18,
-    AngleOffsetRead = 19,
-    AngleLimitWrite = 20,
-    AngleLimitRead = 21,
-    VinLimitWrite = 22,
-    VinLimitRead = 23,
-    TempMaxLimitWrite = 24,
-    TempMaxLimitRead = 25,
-    TempRead = 26,
-    VinRead = 27,
-    PosRead = 28,
-    OrMotorModeWrite = 29,
-    OrMotorModeRead = 30,
-    LoadOrUnloadWrite = 31,
-    LoadOrUnloadRead = 32,
-    LedCtrlWrite = 33,
-    LedCtrlRead = 34,
-    LedErrorWrite = 35,
-    LedErrorRead = 36
-  };
-
-  enum class PacketLength : uint8_t {
-    MoveTimeWrite = 7,
-    MoveTimeRead = 3,
-    MoveTimeWaitWrite = 7,
-    MoveTimeWaitRead = 3,
-    MoveStart = 3,
-    MoveStop = 3,
-    IdWrite = 4,
-    IdRead = 3,
-    AngleOffsetAdjust = 4,
-    AngleOffsetWrite = 3,
-    AngleOffsetRead = 3,
-    AngleLimitWrite = 7,
-    AngleLimitRead = 3,
-    VinLimitWrite = 7,
-    VinLimitRead = 3,
-    TempMaxLimitWrite = 4,
-    TempMaxLimitRead = 3,
-    TempRead = 3,
-    VinRead = 3,
-    PosRead = 3,
-    OrMotorModeWrite = 7,
-    OrMotorModeRead = 3,
-    LoadOrUnloadWrite = 4,
-    LoadOrUnloadRead = 3,
-    LedCtrlWrite = 4,
-    LedCtrlRead = 3,
-    LedErrorWrite = 4,
-    LedErrorRead = 3
+  // Protocol instruction codes (from INST.h)
+  enum class Instruction : uint8_t {
+    Ping = 0x01,
+    Read = 0x02,
+    Write = 0x03,
+    RegWrite = 0x04,
+    RegAction = 0x05,
+    SyncRead = 0x82,
+    SyncWrite = 0x83
   };
 
   enum class ServoError {
@@ -150,6 +99,16 @@ public:
   uint32_t timeout_ms_ = 10;
   static const uint32_t max_servo_count = 10; // maximum servo count supported at once
   
+  // Pack 16-bit value into big-endian byte array (HIGH byte first)
+  void pack_uint16_be(uint8_t* buffer, uint16_t value) {
+    buffer[0] = (value >> 8) & 0xFF;  // HIGH byte
+    buffer[1] = value & 0xFF;         // LOW byte
+  }
+  
+  // Unpack 16-bit value from big-endian byte array (HIGH byte first)
+  uint16_t unpack_uint16_be(const uint8_t* buffer) {
+    return (buffer[0] << 8) | buffer[1];  // HIGH | LOW
+  }
 
 public:
 
@@ -270,7 +229,7 @@ public:
 
   std::optional<int> read_position(uint8_t servo_id) {
     uint8_t params[] = {static_cast<uint8_t>(Register::PresentPositionL), 2};  // Read current position (2 bytes)
-    if(!send_command(servo_id, static_cast<uint8_t>(Command::PosRead), params, 2)) {
+    if(!send_command(servo_id, static_cast<uint8_t>(Instruction::Read), params, 2)) {
       return std::nullopt;
     }
     
@@ -280,14 +239,13 @@ public:
     }
     
     // Extract position - SC series (potentiometer): HIGH byte first, then LOW byte
-    // response[5] is HIGH byte, response[6] is LOW byte
-    int position = (response[5] << 8) | response[6];
+    int position = unpack_uint16_be(&response[5]);
     last_error_ = ServoError::None;
     return position;
   }
 
   std::optional<uint8_t> ping(uint8_t ID) {
-    if(!send_command(ID, static_cast<uint8_t>(Command::IdRead))) {  // PING/ID_READ instruction, no params
+    if(!send_command(ID, static_cast<uint8_t>(Instruction::Read))) {  // Read servo ID register
       return std::nullopt;
     }
     
@@ -313,14 +271,16 @@ public:
     uint8_t params[7];
     params[0] = static_cast<uint8_t>(Register::GoalPositionL);
     // SC series (potentiometer): HIGH byte first, then LOW byte
-    params[1] = (position >> 8) & 0xFF;       // Position high byte
-    params[2] = (position) & 0xFF;            // Position low byte
-    params[3] = (time_ms >> 8) & 0xFF;        // Time high byte
-    params[4] = (time_ms) & 0xFF;             // Time low byte
-    params[5] = (speed >> 8) & 0xFF;          // Speed high byte
-    params[6] = (speed) & 0xFF;               // Speed low byte
+    pack_uint16_be(&params[1], position);
+    pack_uint16_be(&params[3], time_ms);
+    pack_uint16_be(&params[5], speed);
     
-    if(!send_command(servo_id, static_cast<uint8_t>(Command::MoveTimeWrite), params, 7)) {
+    Serial.printf("write_pos: pos=%d (0x%02X %02X), time=%d (0x%02X %02X), speed=%d (0x%02X %02X)\n",
+                  position, params[1], params[2], 
+                  time_ms, params[3], params[4],
+                  speed, params[5], params[6]);
+    
+    if(!send_command(servo_id, static_cast<uint8_t>(Instruction::Write), params, 7)) {
       return false;
     }
     

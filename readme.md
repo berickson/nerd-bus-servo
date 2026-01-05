@@ -7,8 +7,7 @@ This project demonstrates how to control Feetech/Waveshare SC series servos (SC0
 For general communication:
 https://files.waveshare.com/upload/2/27/Communication_Protocol_User_Manual-EN%28191218-0923%29.pdf
 
-For specific commands and addresses:
-https://engineering.purdue.edu/477grp4/Team/journal/img%20-%20Juho/week7/servo%20bus%20protocol.pdf
+
 
 ## Solution Overview
 
