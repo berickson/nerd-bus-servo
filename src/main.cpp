@@ -59,6 +59,7 @@ public:
     
     // SRAM (read/write)
     torque_enable = 40,
+    acc = 41,  // Acceleration control (0-255) - STS servos only
     goal_position_l = 42,
     goal_position_h = 43,
     goal_time_l = 44,
@@ -325,18 +326,53 @@ public:
     pack_uint16(&parameters[1], position);
     pack_uint16(&parameters[3], time_ms);
     pack_uint16(&parameters[5], speed);
-    
+
     if(!send_command(servo_id, to_byte(Instruction::write), parameters, 7)) {
       return false;
     }
-    
+
     // Read ACK response
     uint8_t response[MIN_PACKET_SIZE];
     if(!read_response(response, MIN_PACKET_SIZE)) {
       last_error_ = ServoError::no_ack;
       return false;
     }
-    
+
+    last_error_ = ServoError::none;
+    return true;
+  }
+
+  // Write position with hardware acceleration control - STS servos only
+  // ACC parameter (0-255) controls velocity ramping for smooth motion
+  bool write_position_sts_with_accel(uint8_t servo_id, uint16_t position, uint16_t speed, uint8_t acc) {
+    // Safety check: ACC register only exists on STS servos
+    if (servo_type_ != ServoType::STS) {
+      Serial.println("ERROR: Acceleration control only supported on STS servos");
+      last_error_ = ServoError::invalid_parameter;
+      return false;
+    }
+
+    // Write 7 bytes starting at ACC register: acc(1), position(2), time(2), speed(2)
+    // Note: time_ms is set to 0 when using acceleration control (ACC controls ramp rate)
+    uint8_t parameters[8];
+    parameters[0] = to_byte(Register::acc);
+    parameters[1] = acc;  // ACC value (0-255)
+    // Use configured byte order (little-endian for STS)
+    pack_uint16(&parameters[2], position);
+    pack_uint16(&parameters[4], 0);      // time_ms = 0 when using ACC
+    pack_uint16(&parameters[6], speed);
+
+    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 8)) {
+      return false;
+    }
+
+    // Read ACK response
+    uint8_t response[MIN_PACKET_SIZE];
+    if(!read_response(response, MIN_PACKET_SIZE)) {
+      last_error_ = ServoError::no_ack;
+      return false;
+    }
+
     last_error_ = ServoError::none;
     return true;
   }
@@ -501,23 +537,35 @@ public:
   }
 
   // Set wheel velocity for continuous rotation (only works in wheel mode)
-  // speed: 0-2048, where 1024 is stop, <1024 is CCW, >1024 is CW
-  // Higher values = faster rotation
+  // speed: signed 16-bit value where:
+  //   - Positive = CW rotation, magnitude = speed
+  //   - Negative = CCW rotation, magnitude = abs(speed)
+  //   - Direction encoded in bit 15: 0=CW, 1=CCW
   bool set_wheel_velocity(uint8_t servo_id, int16_t speed) {
+    uint16_t speed_value;
+
+    if (speed < 0) {
+      // CCW: Set bit 15 for direction, use absolute value for speed
+      speed_value = (-speed) | (1 << 15);
+    } else {
+      // CW: Bit 15 = 0, use speed as-is
+      speed_value = speed;
+    }
+
     uint8_t parameters[3];
     parameters[0] = to_byte(Register::goal_speed_l);
-    pack_uint16(&parameters[1], speed);
-    
+    pack_uint16(&parameters[1], speed_value);
+
     if(!send_command(servo_id, to_byte(Instruction::write), parameters, 3)) {
       return false;
     }
-    
+
     uint8_t response[MIN_PACKET_SIZE];
     if(!read_response(response, MIN_PACKET_SIZE)) {
       last_error_ = ServoError::no_ack;
       return false;
     }
-    
+
     last_error_ = ServoError::none;
     return true;
   }
@@ -682,31 +730,52 @@ public:
   }
   
   // PWM/Motor mode - available on all servo types
-  // This allows continuous rotation by setting angle limits to 0
+  // SC servos: Set angle limits to 0 to enable PWM mode
+  // STS servos: Set MODE register to 2 (PWM open-loop mode)
   // Then writing PWM values to GOAL_TIME register (not GOAL_SPEED!)
   bool enable_pwm_mode() {
     if (!info_loaded_) return false;
     bus_->set_servo_type(type());
-    
-    // Set min and max angle limits to 0 to enable PWM mode
-    uint8_t params[5];
-    params[0] = SCServoBus::to_byte(SCServoBus::Register::min_angle_limit_l);
-    params[1] = 0;  // min_angle_l
-    params[2] = 0;  // min_angle_h
-    params[3] = 0;  // max_angle_l
-    params[4] = 0;  // max_angle_h
-    
-    if(!bus_->send_command(id_, SCServoBus::to_byte(SCServoBus::Instruction::write), params, 5)) {
-      return false;
+
+    if (type() == SCServoBus::ServoType::STS) {
+      // STS servos: Set MODE register to 2 for PWM open-loop mode
+      uint8_t mode_params[2];
+      mode_params[0] = SCServoBus::to_byte(SCServoBus::Register::mode);
+      mode_params[1] = 2;  // Mode 2 = PWM open-loop speed regulation
+
+      if(!bus_->send_command(id_, SCServoBus::to_byte(SCServoBus::Instruction::write), mode_params, 2)) {
+        return false;
+      }
+
+      uint8_t response[SCServoBus::MIN_PACKET_SIZE];
+      if(!bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE)) {
+        return false;
+      }
+    } else {
+      // SC servos: Set min and max angle limits to 0 to enable PWM mode
+      uint8_t params[5];
+      params[0] = SCServoBus::to_byte(SCServoBus::Register::min_angle_limit_l);
+      params[1] = 0;  // min_angle_l
+      params[2] = 0;  // min_angle_h
+      params[3] = 0;  // max_angle_l
+      params[4] = 0;  // max_angle_h
+
+      if(!bus_->send_command(id_, SCServoBus::to_byte(SCServoBus::Instruction::write), params, 5)) {
+        return false;
+      }
+
+      uint8_t response[SCServoBus::MIN_PACKET_SIZE];
+      if(!bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE)) {
+        return false;
+      }
     }
-    
-    uint8_t response[SCServoBus::MIN_PACKET_SIZE];
-    return bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE);
+
+    return true;
   }
   
   bool set_pwm_speed(int16_t speed) {
     bus_->set_servo_type(type());
-    
+
     // PWM format: use bit 10 for direction
     // Positive = CW, Negative = CCW
     uint16_t pwm_value;
@@ -715,11 +784,11 @@ public:
     } else {
       pwm_value = speed;
     }
-    
+
     // Write to GOAL_TIME register (not GOAL_SPEED!)
     uint8_t parameters[3];
     parameters[0] = SCServoBus::to_byte(SCServoBus::Register::goal_time_l);
-    
+
     // Pack using configured byte order
     uint8_t temp[2];
     bus_->set_servo_type(type());
@@ -732,13 +801,64 @@ public:
     }
     parameters[1] = temp[0];
     parameters[2] = temp[1];
-    
+
     if(!bus_->send_command(id_, SCServoBus::to_byte(SCServoBus::Instruction::write), parameters, 3)) {
       return false;
     }
-    
+
     uint8_t response[SCServoBus::MIN_PACKET_SIZE];
     return bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE);
+  }
+
+  // Restore position mode after PWM mode
+  bool restore_position_mode_from_pwm() {
+    if (!info_loaded_) return false;
+    bus_->set_servo_type(type());
+
+    if (type() == SCServoBus::ServoType::STS) {
+      // STS servos: Set MODE register back to 0 for position servo mode
+      uint8_t mode_params[2];
+      mode_params[0] = SCServoBus::to_byte(SCServoBus::Register::mode);
+      mode_params[1] = 0;  // Mode 0 = Position servo mode
+
+      if(!bus_->send_command(id_, SCServoBus::to_byte(SCServoBus::Instruction::write), mode_params, 2)) {
+        return false;
+      }
+
+      uint8_t response[SCServoBus::MIN_PACKET_SIZE];
+      if(!bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE)) {
+        return false;
+      }
+    } else {
+      // SC servos: Restore angle limits to their original values
+      uint8_t params[5];
+      params[0] = SCServoBus::to_byte(SCServoBus::Register::min_angle_limit_l);
+
+      // Pack min/max angle limits
+      bus_->set_servo_type(type());
+      if (type() == SCServoBus::ServoType::STS) {
+        params[1] = min_encoder_angle_ & 0xFF;
+        params[2] = (min_encoder_angle_ >> 8) & 0xFF;
+        params[3] = max_encoder_angle_ & 0xFF;
+        params[4] = (max_encoder_angle_ >> 8) & 0xFF;
+      } else {
+        params[1] = (min_encoder_angle_ >> 8) & 0xFF;
+        params[2] = min_encoder_angle_ & 0xFF;
+        params[3] = (max_encoder_angle_ >> 8) & 0xFF;
+        params[4] = max_encoder_angle_ & 0xFF;
+      }
+
+      if(!bus_->send_command(id_, SCServoBus::to_byte(SCServoBus::Instruction::write), params, 5)) {
+        return false;
+      }
+
+      uint8_t response[SCServoBus::MIN_PACKET_SIZE];
+      if(!bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE)) {
+        return false;
+      }
+    }
+
+    return true;
   }
 };
 
@@ -778,6 +898,24 @@ public:
       read_info();
     }
     return result;
+  }
+
+  // Hardware acceleration control - unique to STS servos!
+  // ACC parameter (0-255) controls velocity ramping for smooth motion
+  // ACC=0: No acceleration (immediate speed changes)
+  // ACC=50: Moderate smoothing
+  // ACC=200+: High smoothing (gradual ramp-up/ramp-down)
+  bool move_to_encoder_angle_with_accel(uint16_t encoder_angle, uint16_t speed, uint8_t acc) {
+    if (!info_loaded_) return false;
+    bus_->set_servo_type(type());
+    return bus_->write_position_sts_with_accel(id_, encoder_angle, speed, acc);
+  }
+
+  bool move_to_percent_with_accel(float percent, uint16_t speed, uint8_t acc) {
+    if (!info_loaded_) return false;
+    percent = constrain(percent, 0.0f, 1.0f);
+    uint16_t encoder_angle = min_encoder_angle_ + (uint16_t)(percent * encoder_angle_range());
+    return move_to_encoder_angle_with_accel(encoder_angle, speed, acc);
   }
 };
 
@@ -1288,30 +1426,97 @@ void demonstrate_sts_features() {
   }
   Serial.printf("Center position: %d\n", *center);
   
-  // Smooth acceleration test - gradually increase speed
-  Serial.println("\n=== Acceleration Test - Gradual Speed Ramp ===");
-  Serial.println("Moving with increasing then decreasing speed...");
-  
-  float positions[] = {0.3f, 0.7f, 0.3f, 0.7f, 0.5f};
-  uint32_t durations[] = {3000, 2000, 1500, 2500, 2000};  // Varying speeds
-  
-  for (size_t i = 0; i < 5; i++) {
-    Serial.printf("Move %d: to %.0f%% in %dms\n", i+1, positions[i]*100, durations[i]);
-    sts_servo.move_to_percent(positions[i], durations[i]);
-    
-    unsigned long start = millis();
-    unsigned long move_duration = durations[i] + 500;
-    
-    while (millis() - start < move_duration) {
-      auto pos = sts_servo.read_encoder_angle();
-      if (pos) {
-        float percent = 100.0f * (*pos - sts_servo.min_encoder_angle()) / sts_servo.encoder_angle_range();
-        Serial.printf("  t=%4lums: pos=%d (%.1f%%)\n", millis() - start, *pos, percent);
-      }
-      delay(200);
+  // Hardware acceleration test - demonstrate STS ACC register
+  Serial.println("\n=== Hardware Acceleration Test - STS ACC Register ===");
+  Serial.println("This test demonstrates true hardware acceleration using register 41.");
+  Serial.println("Position deltas [Δ] show velocity - watch for ramp-up/ramp-down patterns!\n");
+
+  uint16_t range = sts_servo.max_encoder_angle() - sts_servo.min_encoder_angle();
+  uint16_t speed = (range * 1000) / 3000;  // ~3 second movement at target velocity
+
+  Serial.printf("Servo range: %d units, Target speed: %d units/sec\n\n", range, speed);
+
+  // Move to start position (0%) first
+  Serial.println("Moving to start position (0%)...");
+  sts_servo.move_to_percent(0.0f, 2000);
+  delay(2500);
+
+  // Test 1: ACC=0 (No acceleration)
+  Serial.println("\nMovement 1: ACC=0 (No acceleration - abrupt start/stop)");
+  Serial.printf("Moving 0%% → 100%% with speed=%d\n", speed);
+  sts_servo.move_to_percent_with_accel(1.0f, speed, 0);
+  delay(500);
+
+  unsigned long start = millis();
+  int last_pos = -1;
+  while (millis() - start < 4000) {
+    auto pos = sts_servo.read_encoder_angle();
+    if (pos) {
+      int delta = (last_pos >= 0) ? (*pos - last_pos) : 0;
+      float percent = 100.0f * (*pos - sts_servo.min_encoder_angle()) / sts_servo.encoder_angle_range();
+      Serial.printf("  t=%4lums: pos=%4d (%5.1f%%)  [Δ=%4d]\n",
+                    millis() - start, *pos, percent, delta);
+      last_pos = *pos;
     }
+    delay(150);
   }
-  
+
+  // Return to start for next test
+  Serial.println("Returning to 0%...");
+  sts_servo.move_to_percent(0.0f, 2000);
+  delay(2500);
+
+  // Test 2: ACC=50 (Moderate acceleration)
+  Serial.println("\nMovement 2: ACC=50 (Moderate acceleration)");
+  Serial.printf("Moving 0%% → 100%% with speed=%d\n", speed);
+  sts_servo.move_to_percent_with_accel(1.0f, speed, 50);
+  delay(500);
+
+  start = millis();
+  last_pos = -1;
+  while (millis() - start < 5000) {
+    auto pos = sts_servo.read_encoder_angle();
+    if (pos) {
+      int delta = (last_pos >= 0) ? (*pos - last_pos) : 0;
+      float percent = 100.0f * (*pos - sts_servo.min_encoder_angle()) / sts_servo.encoder_angle_range();
+      Serial.printf("  t=%4lums: pos=%4d (%5.1f%%)  [Δ=%4d]\n",
+                    millis() - start, *pos, percent, delta);
+      last_pos = *pos;
+    }
+    delay(150);
+  }
+
+  // Return to start for next test
+  Serial.println("Returning to 0%...");
+  sts_servo.move_to_percent(0.0f, 2000);
+  delay(2500);
+
+  // Test 3: ACC=200 (High acceleration)
+  Serial.println("\nMovement 3: ACC=200 (High acceleration - very smooth)");
+  Serial.printf("Moving 0%% → 100%% with speed=%d\n", speed);
+  sts_servo.move_to_percent_with_accel(1.0f, speed, 200);
+  delay(500);
+
+  start = millis();
+  last_pos = -1;
+  while (millis() - start < 6000) {
+    auto pos = sts_servo.read_encoder_angle();
+    if (pos) {
+      int delta = (last_pos >= 0) ? (*pos - last_pos) : 0;
+      float percent = 100.0f * (*pos - sts_servo.min_encoder_angle()) / sts_servo.encoder_angle_range();
+      Serial.printf("  t=%4lums: pos=%4d (%5.1f%%)  [Δ=%4d]\n",
+                    millis() - start, *pos, percent, delta);
+      last_pos = *pos;
+    }
+    delay(150);
+  }
+
+  Serial.println("\n=== Acceleration Test Complete ===");
+  Serial.println("Notice the difference in position deltas:");
+  Serial.println("  ACC=0:   Immediate large deltas (abrupt speed change)");
+  Serial.println("  ACC=50:  Moderate ramp-up/ramp-down");
+  Serial.println("  ACC=200: Gradual ramp-up/ramp-down (smooth velocity curve)");
+
   // Continuous rotation - STS servos can rotate 360+ degrees in wheel mode!
   Serial.println("\n=== Continuous Rotation (Wheel Mode) ===");
   Serial.println("STS servos support wheel mode for continuous rotation!");
@@ -1329,16 +1534,15 @@ void demonstrate_sts_features() {
   }
   
   Serial.println("Wheel mode enabled! Now controlling velocity instead of position.");
-  
-  // In wheel mode: speed values around 1024 mean:
-  // 1024 = stop
-  // < 1024 = counter-clockwise (lower = faster)
-  // > 1024 = clockwise (higher = faster)
-  
+  Serial.println("\nIn wheel mode:");
+  Serial.println("  speed > 0: clockwise (higher = faster)");
+  Serial.println("  speed = 0: stopped");
+  Serial.println("  speed < 0: counter-clockwise (more negative = faster)");
+
   Serial.println("\nRotating clockwise at different speeds...");
-  int speeds[] = {1124, 1224, 1424, 1724, 2024};  // Increasing CW speeds
+  int speeds[] = {100, 200, 400, 700, 1000};  // Positive values for CW direction
   const char* labels[] = {"Slow", "Medium-Slow", "Medium", "Medium-Fast", "Fast"};
-  
+
   for (int i = 0; i < 5; i++) {
     Serial.printf("\n%s CW rotation (speed=%d):\n", labels[i], speeds[i]);
     servo_bus.set_wheel_velocity(sts_servo.id(), speeds[i]);
@@ -1369,8 +1573,8 @@ void demonstrate_sts_features() {
   }
   
   Serial.println("\nRotating counter-clockwise...");
-  int ccw_speeds[] = {924, 824, 624, 324, 24};  // Increasing CCW speeds
-  
+  int ccw_speeds[] = {-100, -200, -400, -700, -1000};  // Negative values for CCW direction
+
   for (int i = 0; i < 5; i++) {
     Serial.printf("\n%s CCW rotation (speed=%d):\n", labels[i], ccw_speeds[i]);
     servo_bus.set_wheel_velocity(sts_servo.id(), ccw_speeds[i]);
@@ -1400,8 +1604,8 @@ void demonstrate_sts_features() {
   }
   
   // Stop the motor
-  Serial.println("\nStopping rotation (speed=1024)...");
-  servo_bus.set_wheel_velocity(sts_servo.id(), 1024);
+  Serial.println("\nStopping rotation (speed=0)...");
+  servo_bus.set_wheel_velocity(sts_servo.id(), 0);
   delay(500);
   
   auto stopped_pos = servo_bus.read_position(sts_servo.id());
@@ -1465,14 +1669,14 @@ void demonstrate_wheel_mode() {
   
   Serial.println("Wheel mode enabled! Now controlling velocity instead of position.");
   Serial.println("\nIn wheel mode:");
-  Serial.println("  speed = 1024: stopped");
-  Serial.println("  speed < 1024: counter-clockwise (lower = faster)");
-  Serial.println("  speed > 1024: clockwise (higher = faster)");
-  
+  Serial.println("  speed > 0: clockwise (higher = faster)");
+  Serial.println("  speed = 0: stopped");
+  Serial.println("  speed < 0: counter-clockwise (more negative = faster)");
+
   Serial.println("\nRotating clockwise at different speeds...");
-  int speeds[] = {1100, 1200, 1500, 1800, 2000};  // Increasing CW speeds
+  int speeds[] = {100, 200, 400, 700, 1000};  // Positive values for CW direction
   const char* labels[] = {"Slow", "Medium-Slow", "Medium", "Medium-Fast", "Fast"};
-  
+
   for (int i = 0; i < 5; i++) {
     Serial.printf("\n%s CW rotation (speed=%d):\n", labels[i], speeds[i]);
     sts_servo.set_wheel_velocity(speeds[i]);
@@ -1503,8 +1707,8 @@ void demonstrate_wheel_mode() {
   }
   
   Serial.println("\nRotating counter-clockwise...");
-  int ccw_speeds[] = {900, 800, 500, 200, 0};  // Increasing CCW speeds
-  
+  int ccw_speeds[] = {-100, -200, -400, -700, -1000};  // Negative values for CCW direction
+
   for (int i = 0; i < 5; i++) {
     Serial.printf("\n%s CCW rotation (speed=%d):\n", labels[i], ccw_speeds[i]);
     sts_servo.set_wheel_velocity(ccw_speeds[i]);
@@ -1534,8 +1738,8 @@ void demonstrate_wheel_mode() {
   }
   
   // Stop the motor
-  Serial.println("\nStopping rotation (speed=1024)...");
-  sts_servo.set_wheel_velocity(1024);
+  Serial.println("\nStopping rotation (speed=0)...");
+  sts_servo.set_wheel_velocity(0);
   delay(500);
   
   auto stopped_pos = sts_servo.read_encoder_angle();
@@ -1572,14 +1776,10 @@ void demonstrate_pwm_mode() {
   Serial.println("PWM mode works on both SC and STS servos!");
 
   // Create servo objects
-  // SC servos: IDs 2, 3, 4 (big-endian)
-  // STS servo: ID 5 (little-endian)
-  auto servo2 = SCServo(&servo_bus, 2);
-  auto servo3 = SCServo(&servo_bus, 3);
   auto servo4 = SCServo(&servo_bus, 4);
   auto servo5 = STSServo(&servo_bus, 5);
 
-  Servo* servos[] = {&servo2, &servo3, &servo4, &servo5};
+  Servo* servos[] = {&servo4, &servo5};
   
   Serial.println("\n=== Reading servo info ===");
   for (auto* servo : servos) {
@@ -1831,9 +2031,9 @@ void setup() {
 
   // Other demos available (currently not running):
   // emergency_servo_reset();              // Emergency recovery for stuck servos
-  // demonstrate_pwm_mode();               // PWM mode demo - works on all servos
+  demonstrate_pwm_mode();               // PWM mode demo - works on all servos
   // demonstrate_coordinated_moving();     // Original version with manual type switching
-   demonstrate_coordinated_moving_2();   // Clean version using servo objects
+  // demonstrate_coordinated_moving_2();   // Clean version using servo objects
   // demonstrate_sts_features();           // Full STS features demo
   // demonstrate_wheel_mode();             // STS-only wheel mode demo
 }

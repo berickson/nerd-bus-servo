@@ -4,8 +4,13 @@ This project demonstrates how to control Feetech/Waveshare SC series servos (SC0
 
 ## Reference Documents
 
-For general communication:
-https://files.waveshare.com/upload/2/27/Communication_Protocol_User_Manual-EN%28191218-0923%29.pdf
+**General Communication Protocol:**
+- https://files.waveshare.com/upload/2/27/Communication_Protocol_User_Manual-EN%28191218-0923%29.pdf
+
+**STS Servo Documentation:**
+- [ST3215 Servo User Manual (PDF)](https://download.kamami.pl/p1181056-ST3215_Servo_User_Manual.pdf)
+- [ST3215 Servo - Waveshare Wiki](https://www.waveshare.com/wiki/ST3215_Servo)
+- [ST3215 Series Product Page](https://www.waveshare.com/st3215-servo.htm)
 
 
 
