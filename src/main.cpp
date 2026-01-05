@@ -15,10 +15,14 @@ SCSCL legacy_servo_bus;
 
 class SCServoBus {
 public:
-  // Protocol constants
-  static constexpr uint8_t PACKET_HEADER_BYTE_1 = 0xFF;
-  static constexpr uint8_t PACKET_HEADER_BYTE_2 = 0xFF;
-  static constexpr uint8_t BROADCAST_ID = 0xFE;
+  // Protocol byte constants
+  enum class Protocol : uint8_t {
+    HeaderByte1 = 0xFF,
+    HeaderByte2 = 0xFF,
+    BroadcastId = 0xFE
+  };
+  
+  // Protocol size constants
   static constexpr int HEADER_SIZE = 2;
   static constexpr int MIN_PACKET_SIZE = 6;  // header(2) + id(1) + length(1) + instruction(1) + checksum(1)
   static constexpr int INSTRUCTION_OVERHEAD = 2;  // instruction byte + params (length field = instruction + params)
@@ -95,6 +99,7 @@ public:
   };
 
   // Helper functions to convert enums to underlying types
+  static constexpr uint8_t to_byte(Protocol p) { return static_cast<uint8_t>(p); }
   static constexpr uint8_t to_byte(Register r) { return static_cast<uint8_t>(r); }
   static constexpr uint8_t to_byte(Instruction i) { return static_cast<uint8_t>(i); }
   static constexpr int to_index(PacketOffset offset) { return static_cast<int>(offset); }
@@ -158,8 +163,8 @@ public:
     uint8_t packet[MAX_PACKET_SIZE];
     
     // Build packet
-    packet[to_index(PacketOffset::Header1)] = PACKET_HEADER_BYTE_1;
-    packet[to_index(PacketOffset::Header2)] = PACKET_HEADER_BYTE_2;
+    packet[to_index(PacketOffset::Header1)] = to_byte(Protocol::HeaderByte1);
+    packet[to_index(PacketOffset::Header2)] = to_byte(Protocol::HeaderByte2);
     packet[to_index(PacketOffset::Id)] = id;
     packet[to_index(PacketOffset::Length)] = INSTRUCTION_OVERHEAD + parameter_count;  // LENGTH = instruction byte + parameters
     packet[to_index(PacketOffset::Instruction)] = instruction;
@@ -209,7 +214,7 @@ public:
     bus_serial_->readBytes(response, expected_size);
     
     // Validate header
-    if(response[to_index(PacketOffset::Header1)] != PACKET_HEADER_BYTE_1 || response[to_index(PacketOffset::Header2)] != PACKET_HEADER_BYTE_2) {
+    if(response[to_index(PacketOffset::Header1)] != to_byte(Protocol::HeaderByte1) || response[to_index(PacketOffset::Header2)] != to_byte(Protocol::HeaderByte2)) {
       last_error_ = ServoError::InvalidHeader;
       return false;
     }
