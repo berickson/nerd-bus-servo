@@ -17,9 +17,9 @@ class SCServoBus {
 public:
   // Protocol byte constants
   enum class Protocol : uint8_t {
-    HeaderByte1 = 0xFF,
-    HeaderByte2 = 0xFF,
-    BroadcastId = 0xFE
+    header_byte_1 = 0xFF,
+    header_byte_2 = 0xFF,
+    broadcast_id = 0xFE
   };
   
   // Protocol size constants
@@ -29,73 +29,73 @@ public:
   
   // Packet field offsets
   enum class PacketOffset : int {
-    Header1 = 0,
-    Header2 = 1,
-    Id = 2,
-    Length = 3,
-    Instruction = 4,
-    Parameters = 5
+    header_1 = 0,
+    header_2 = 1,
+    id = 2,
+    length = 3,
+    instruction = 4,
+    parameters = 5
   };
 
   // Servo memory register addresses (from SCSCL.h)
   enum class Register : uint8_t {
     // EPROM (read-only)
-    VersionL = 3,
-    VersionH = 4,
+    version_l = 3,
+    version_h = 4,
     
     // EPROM (read/write)
-    Id = 5,
-    BaudRate = 6,
-    MinAngleLimitL = 9,
-    MinAngleLimitH = 10,
-    MaxAngleLimitL = 11,
-    MaxAngleLimitH = 12,
-    CwDead = 26,
-    CcwDead = 27,
+    id = 5,
+    baud_rate = 6,
+    min_angle_limit_l = 9,
+    min_angle_limit_h = 10,
+    max_angle_limit_l = 11,
+    max_angle_limit_h = 12,
+    cw_dead = 26,
+    ccw_dead = 27,
     
     // SRAM (read/write)
-    TorqueEnable = 40,
-    GoalPositionL = 42,
-    GoalPositionH = 43,
-    GoalTimeL = 44,
-    GoalTimeH = 45,
-    GoalSpeedL = 46,
-    GoalSpeedH = 47,
-    Lock = 48,
+    torque_enable = 40,
+    goal_position_l = 42,
+    goal_position_h = 43,
+    goal_time_l = 44,
+    goal_time_h = 45,
+    goal_speed_l = 46,
+    goal_speed_h = 47,
+    lock = 48,
     
     // SRAM (read-only)
-    PresentPositionL = 56,
-    PresentPositionH = 57,
-    PresentSpeedL = 58,
-    PresentSpeedH = 59,
-    PresentLoadL = 60,
-    PresentLoadH = 61,
-    PresentVoltage = 62,
-    PresentTemperature = 63,
-    Moving = 66,
-    PresentCurrentL = 69,
-    PresentCurrentH = 70
+    present_position_l = 56,
+    present_position_h = 57,
+    present_speed_l = 58,
+    present_speed_h = 59,
+    present_load_l = 60,
+    present_load_h = 61,
+    present_voltage = 62,
+    present_temperature = 63,
+    moving = 66,
+    present_current_l = 69,
+    present_current_h = 70
   };
 
   // Protocol instruction codes (from INST.h)
   enum class Instruction : uint8_t {
-    Ping = 0x01,
-    Read = 0x02,
-    Write = 0x03,
-    RegWrite = 0x04,
-    RegAction = 0x05,
-    SyncRead = 0x82,
-    SyncWrite = 0x83
+    ping = 0x01,
+    read = 0x02,
+    write = 0x03,
+    reg_write = 0x04,
+    reg_action = 0x05,
+    sync_read = 0x82,
+    sync_write = 0x83
   };
 
   enum class ServoError {
-    None = 0,
-    Timeout,
-    InvalidHeader,
-    ChecksumMismatch,
-    InvalidResponse,
-    InvalidParameter,
-    NoAck
+    none = 0,
+    timeout,
+    invalid_header,
+    checksum_mismatch,
+    invalid_response,
+    invalid_parameter,
+    no_ack
   };
 
   // Helper functions to convert enums to underlying types
@@ -105,7 +105,7 @@ public:
   static constexpr int to_index(PacketOffset offset) { return static_cast<int>(offset); }
 
   private:
-  ServoError last_error_ = ServoError::None;
+  ServoError last_error_ = ServoError::none;
   HardwareSerial* bus_serial_ = nullptr;
   uint32_t timeout_ms_ = 10;
   static const uint32_t max_servo_count = 10; // maximum servo count supported at once
@@ -138,14 +138,14 @@ public:
   void set_serial(HardwareSerial* serial) { bus_serial_ = serial; }
   
   // Error state accessors
-  inline bool ok() const { return last_error_ == ServoError::None; }
+  inline bool ok() const { return last_error_ == ServoError::none; }
   inline ServoError last_error() const { return last_error_; }
-  inline void clear_error() { last_error_ = ServoError::None; }
+  inline void clear_error() { last_error_ = ServoError::none; }
 
   bool send_command(uint8_t id, uint8_t instruction, uint8_t* parameters = nullptr, int parameter_count = 0) {
     const int max_parameter_count = max_servo_count + 2;
     if (parameter_count > max_parameter_count) {
-      last_error_ = ServoError::InvalidParameter;
+      last_error_ = ServoError::invalid_parameter;
       return false;
     }
 
@@ -163,19 +163,19 @@ public:
     uint8_t packet[MAX_PACKET_SIZE];
     
     // Build packet
-    packet[to_index(PacketOffset::Header1)] = to_byte(Protocol::HeaderByte1);
-    packet[to_index(PacketOffset::Header2)] = to_byte(Protocol::HeaderByte2);
-    packet[to_index(PacketOffset::Id)] = id;
-    packet[to_index(PacketOffset::Length)] = INSTRUCTION_OVERHEAD + parameter_count;  // LENGTH = instruction byte + parameters
-    packet[to_index(PacketOffset::Instruction)] = instruction;
+    packet[to_index(PacketOffset::header_1)] = to_byte(Protocol::header_byte_1);
+    packet[to_index(PacketOffset::header_2)] = to_byte(Protocol::header_byte_2);
+    packet[to_index(PacketOffset::id)] = id;
+    packet[to_index(PacketOffset::length)] = INSTRUCTION_OVERHEAD + parameter_count;  // LENGTH = instruction byte + parameters
+    packet[to_index(PacketOffset::instruction)] = instruction;
     
     // Copy parameters
     for(int i = 0; i < parameter_count; i++) {
-      packet[to_index(PacketOffset::Parameters) + i] = parameters[i];
+      packet[to_index(PacketOffset::parameters) + i] = parameters[i];
     }
     
     // Calculate and append checksum
-    packet[to_index(PacketOffset::Parameters) + parameter_count] = calculate_checksum(id, packet[to_index(PacketOffset::Length)], instruction, parameters, parameter_count);
+    packet[to_index(PacketOffset::parameters) + parameter_count] = calculate_checksum(id, packet[to_index(PacketOffset::length)], instruction, parameters, parameter_count);
     
     int packet_size = MIN_PACKET_SIZE + parameter_count;
     
@@ -191,12 +191,12 @@ public:
         echo_count++;
       }
       if(millis() - echo_start > timeout_ms_) {
-        last_error_ = ServoError::Timeout;
+        last_error_ = ServoError::timeout;
         return false;
       }
     }
 
-    last_error_ = ServoError::None;
+    last_error_ = ServoError::none;
     return true;
   }
 
@@ -207,40 +207,40 @@ public:
     while(bus_serial_->available() < expected_size && millis()-start_ms < timeout_ms_);
     
     if(bus_serial_->available() < expected_size) {
-      last_error_ = ServoError::Timeout;
+      last_error_ = ServoError::timeout;
       return false;
     }
     
     bus_serial_->readBytes(response, expected_size);
     
     // Validate header
-    if(response[to_index(PacketOffset::Header1)] != to_byte(Protocol::HeaderByte1) || response[to_index(PacketOffset::Header2)] != to_byte(Protocol::HeaderByte2)) {
-      last_error_ = ServoError::InvalidHeader;
+    if(response[to_index(PacketOffset::header_1)] != to_byte(Protocol::header_byte_1) || response[to_index(PacketOffset::header_2)] != to_byte(Protocol::header_byte_2)) {
+      last_error_ = ServoError::invalid_header;
       return false;
     }
     
     // Validate checksum
     int parameter_count = expected_size - MIN_PACKET_SIZE;
     uint8_t expected_checksum = calculate_checksum(
-      response[to_index(PacketOffset::Id)], 
-      response[to_index(PacketOffset::Length)], 
-      response[to_index(PacketOffset::Instruction)],
-      parameter_count > 0 ? &response[to_index(PacketOffset::Parameters)] : nullptr,
+      response[to_index(PacketOffset::id)], 
+      response[to_index(PacketOffset::length)], 
+      response[to_index(PacketOffset::instruction)],
+      parameter_count > 0 ? &response[to_index(PacketOffset::parameters)] : nullptr,
       parameter_count
     );
     
     if(expected_checksum != response[expected_size - 1]) {
-      last_error_ = ServoError::ChecksumMismatch;
+      last_error_ = ServoError::checksum_mismatch;
       return false;
     }
     
-    last_error_ = ServoError::None;
+    last_error_ = ServoError::none;
     return true;
   }
 
   std::optional<int> read_position(uint8_t servo_id) {
-    uint8_t parameters[] = {to_byte(Register::PresentPositionL), 2};  // Read current position (2 bytes)
-    if(!send_command(servo_id, to_byte(Instruction::Read), parameters, 2)) {
+    uint8_t parameters[] = {to_byte(Register::present_position_l), 2};  // Read current position (2 bytes)
+    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
       return std::nullopt;
     }
     
@@ -251,12 +251,12 @@ public:
     
     // Extract position - SC series (potentiometer): HIGH byte first, then LOW byte
     int position = unpack_uint16_be(&response[5]);
-    last_error_ = ServoError::None;
+    last_error_ = ServoError::none;
     return position;
   }
 
   std::optional<uint8_t> ping(uint8_t servo_id) {
-    if(!send_command(servo_id, to_byte(Instruction::Read))) {  // Read servo ID register
+    if(!send_command(servo_id, to_byte(Instruction::read))) {  // Read servo ID register
       return std::nullopt;
     }
     
@@ -265,19 +265,19 @@ public:
       return std::nullopt;
     }
     
-    if(response[to_index(PacketOffset::Id)] != servo_id) {
-      last_error_ = ServoError::InvalidResponse;
+    if(response[to_index(PacketOffset::id)] != servo_id) {
+      last_error_ = ServoError::invalid_response;
       return std::nullopt;
     }
     
-    last_error_ = ServoError::None;
-    return response[to_index(PacketOffset::Id)];
+    last_error_ = ServoError::none;
+    return response[to_index(PacketOffset::id)];
   }
 
   bool write_position(uint8_t servo_id, uint16_t position, uint16_t time_ms, uint16_t speed) {
-    // Write 6 bytes starting at GoalPositionL: position(2), time(2), speed(2)
+    // Write 6 bytes starting at goal_position_l: position(2), time(2), speed(2)
     uint8_t parameters[7];
-    parameters[0] = to_byte(Register::GoalPositionL);
+    parameters[0] = to_byte(Register::goal_position_l);
     // SC series (potentiometer): HIGH byte first, then LOW byte
     pack_uint16_be(&parameters[1], position);
     pack_uint16_be(&parameters[3], time_ms);
@@ -288,18 +288,18 @@ public:
                   time_ms, parameters[3], parameters[4],
                   speed, parameters[5], parameters[6]);
     
-    if(!send_command(servo_id, to_byte(Instruction::Write), parameters, 7)) {
+    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 7)) {
       return false;
     }
     
     // Read ACK response
     uint8_t response[MIN_PACKET_SIZE];
     if(!read_response(response, MIN_PACKET_SIZE)) {
-      last_error_ = ServoError::NoAck;
+      last_error_ = ServoError::no_ack;
       return false;
     }
     
-    last_error_ = ServoError::None;
+    last_error_ = ServoError::none;
     return true;
   }
 
