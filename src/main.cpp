@@ -264,9 +264,6 @@ public:
   }
 
   bool write_pos(uint8_t servo_id, uint16_t position, uint16_t time_ms, uint16_t speed) {
-    // legacy_servo_bus.WritePos(servo_id, position, time_ms, speed);
-    // last_error_ = ServoError::None;
-    // return true;
     // Write 6 bytes starting at GoalPositionL: position(2), time(2), speed(2)
     uint8_t params[7];
     params[0] = static_cast<uint8_t>(Register::GoalPositionL);
@@ -321,17 +318,6 @@ void setup() {
 
   Serial1.begin(1000000, SERIAL_8N1, pin_servo_rx, pin_servo_tx);
   servo_bus.set_serial(&Serial1);
-
-  // gpio_config_t io_conf = {};
-  // io_conf.pin_bit_mask = (1ULL << pin_servo_tx);
-  // io_conf.mode = GPIO_MODE_INPUT_OUTPUT_OD;
-  // io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-  // gpio_config(&io_conf);
-
-  // // Reconnect UART after GPIO config
-  // esp_rom_gpio_connect_out_signal(pin_servo_tx, U1TXD_OUT_IDX, false, false);
-  // esp_rom_gpio_connect_in_signal(pin_servo_rx, U1RXD_IN_IDX, false);
-
 
   legacy_servo_bus.pSerial = &Serial1;
   delay(500);
