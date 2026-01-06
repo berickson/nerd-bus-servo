@@ -565,7 +565,7 @@ public:
   }
 
   // Restore position mode from wheel mode
-  bool restore_position_mode(uint8_t servo_id, uint16_t min_angle, uint16_t max_angle) {
+  bool enable_position_mode(uint8_t servo_id, uint16_t min_angle, uint16_t max_angle) {
     if (servo_type_ == ServoType::STS) {
       // STS servos: Write 0 to MODE register to restore position mode
       uint8_t mode_params[2];
@@ -994,57 +994,6 @@ public:
     uint8_t response[SCServoBus::MIN_PACKET_SIZE];
     return bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE);
   }
-
-  // Restore position mode after PWM mode
-  bool restore_position_mode_from_pwm() {
-    if (!info_loaded_) return false;
-    bus_->set_servo_type(type());
-
-    if (type() == SCServoBus::ServoType::STS) {
-      // STS servos: Set MODE register back to 0 for position servo mode
-      uint8_t mode_params[2];
-      mode_params[0] = SCServoBus::to_byte(SCServoBus::Register::mode);
-      mode_params[1] = 0;  // Mode 0 = Position servo mode
-
-      if(!bus_->send_command(id_, SCServoBus::to_byte(SCServoBus::Instruction::write), mode_params, 2)) {
-        return false;
-      }
-
-      uint8_t response[SCServoBus::MIN_PACKET_SIZE];
-      if(!bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE)) {
-        return false;
-      }
-    } else {
-      // SC servos: Restore angle limits to their original values
-      uint8_t params[5];
-      params[0] = SCServoBus::to_byte(SCServoBus::Register::min_angle_limit_l);
-
-      // Pack min/max angle limits
-      bus_->set_servo_type(type());
-      if (type() == SCServoBus::ServoType::STS) {
-        params[1] = min_encoder_angle_ & 0xFF;
-        params[2] = (min_encoder_angle_ >> 8) & 0xFF;
-        params[3] = max_encoder_angle_ & 0xFF;
-        params[4] = (max_encoder_angle_ >> 8) & 0xFF;
-      } else {
-        params[1] = (min_encoder_angle_ >> 8) & 0xFF;
-        params[2] = min_encoder_angle_ & 0xFF;
-        params[3] = (max_encoder_angle_ >> 8) & 0xFF;
-        params[4] = max_encoder_angle_ & 0xFF;
-      }
-
-      if(!bus_->send_command(id_, SCServoBus::to_byte(SCServoBus::Instruction::write), params, 5)) {
-        return false;
-      }
-
-      uint8_t response[SCServoBus::MIN_PACKET_SIZE];
-      if(!bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE)) {
-        return false;
-      }
-    }
-
-    return true;
-  }
 };
 
 // SC series servo (big-endian)
@@ -1074,10 +1023,10 @@ public:
     return bus_->set_wheel_velocity(id_, speed);
   }
   
-  bool restore_position_mode() {
+  bool enable_position_mode() {
     if (!info_loaded_) return false;
     bus_->set_servo_type(type());
-    bool result = bus_->restore_position_mode(id_, min_encoder_angle_, max_encoder_angle_);
+    bool result = bus_->enable_position_mode(id_, min_encoder_angle_, max_encoder_angle_);
     if (result) {
       // Re-read info to ensure cached values are correct
       read_info();
@@ -1800,7 +1749,7 @@ void demonstrate_sts_features() {
   
   // Restore position mode
   Serial.println("\nRestoring position mode...");
-  if (!servo_bus.restore_position_mode(sts_servo.id(), saved_min, saved_max)) {
+  if (!servo_bus.enable_position_mode(sts_servo.id(), saved_min, saved_max)) {
     Serial.println("Failed to restore position mode!");
     return;
   }
@@ -1934,7 +1883,7 @@ void demonstrate_wheel_mode() {
   
   // Restore position mode
   Serial.println("\nRestoring position mode...");
-  if (!sts_servo.restore_position_mode()) {
+  if (!sts_servo.enable_position_mode()) {
     Serial.println("Failed to restore position mode!");
     return;
   }
