@@ -55,7 +55,9 @@ public:
     max_angle_limit_h = 12,
     cw_dead = 26,
     ccw_dead = 27,
-    mode = 33,  // Servo mode: 0=position, 1=wheel (continuous rotation)
+    ofs_l = 31,      // Offset calibration low byte (STS only)
+    ofs_h = 32,      // Offset calibration high byte (STS only)
+    mode = 33,       // Servo mode: 0=position, 1=wheel (continuous rotation) (STS only)
     
     // SRAM (read/write)
     torque_enable = 40,
@@ -66,8 +68,10 @@ public:
     goal_time_h = 45,
     goal_speed_l = 46,
     goal_speed_h = 47,
-    lock_sc = 48,    // LOCK register for SC servos (SCSCL)
-    lock_sts = 55,   // LOCK register for STS servos (SMS_STS)
+    lock_sc = 48,          // LOCK register for SC servos (SCSCL)
+    torque_limit_l = 48,   // Torque limit low byte (STS only) - CONFLICTS with SC LOCK!
+    torque_limit_h = 49,   // Torque limit high byte (STS only)
+    lock_sts = 55,         // LOCK register for STS servos (SMS_STS)
     
     // SRAM (read-only)
     present_position_l = 56,
@@ -153,6 +157,34 @@ public:
       return unpack_uint16_le(buffer);
     } else {
       return unpack_uint16_be(buffer);
+    }
+  }
+
+  // Runtime validation: Check if a register is valid for the current servo type
+  static bool is_register_valid_for_type(Register reg, ServoType type) {
+    uint8_t addr = to_byte(reg);
+
+    // Handle address 48 conflict: SC=LOCK, STS=TORQUE_LIMIT_L
+    if (addr == 48) {
+      // Both servos can use address 48, but for different purposes
+      // This is validated at the semantic level (which register name was used)
+      return (reg == Register::lock_sc && type == ServoType::SC) ||
+             (reg == Register::torque_limit_l && type == ServoType::STS);
+    }
+
+    switch(reg) {
+      // STS-only registers
+      case Register::ofs_l:
+      case Register::ofs_h:
+      case Register::mode:
+      case Register::acc:
+      case Register::torque_limit_h:
+      case Register::lock_sts:
+        return type == ServoType::STS;
+
+      // Common registers (valid for both types)
+      default:
+        return true;
     }
   }
 
@@ -395,6 +427,16 @@ public:
 
   // Write a single byte to a register
   bool write_byte(uint8_t servo_id, Register reg, uint8_t value) {
+    // Validate register is appropriate for servo type
+    if (!is_register_valid_for_type(reg, servo_type_)) {
+      Serial.printf("ERROR: Register %d invalid for %s servo ID %d\n",
+                    to_byte(reg),
+                    servo_type_ == ServoType::SC ? "SC" : "STS",
+                    servo_id);
+      last_error_ = ServoError::invalid_parameter;
+      return false;
+    }
+
     uint8_t parameters[2];
     parameters[0] = to_byte(reg);
     parameters[1] = value;
@@ -481,57 +523,88 @@ public:
   // Enable wheel mode (continuous rotation) for STS servos
   // Write 1 to MODE register (33) to enable velocity control mode
   bool enable_wheel_mode(uint8_t servo_id) {
+    // Wheel mode is only supported on STS servos
+    if (servo_type_ != ServoType::STS) {
+      Serial.println("ERROR: Wheel mode only supported on STS servos, not SC servos");
+      last_error_ = ServoError::invalid_parameter;
+      return false;
+    }
+
     // First, enable torque
     uint8_t torque_params[2];
     torque_params[0] = to_byte(Register::torque_enable);
     torque_params[1] = 1;  // Enable
-    
+
     if(!send_command(servo_id, to_byte(Instruction::write), torque_params, 2)) {
       return false;
     }
-    
+
     uint8_t torque_response[MIN_PACKET_SIZE];
     if(!read_response(torque_response, MIN_PACKET_SIZE)) {
       last_error_ = ServoError::no_ack;
       return false;
     }
-    
-    // Write 1 to MODE register to enable wheel mode
+
+    // Write 1 to MODE register to enable wheel mode (STS servos only)
     uint8_t mode_params[2];
     mode_params[0] = to_byte(Register::mode);
     mode_params[1] = 1;  // 1 = wheel mode
-    
+
     if(!send_command(servo_id, to_byte(Instruction::write), mode_params, 2)) {
       return false;
     }
-    
+
     uint8_t response[MIN_PACKET_SIZE];
     if(!read_response(response, MIN_PACKET_SIZE)) {
       last_error_ = ServoError::no_ack;
       return false;
     }
-    
+
     last_error_ = ServoError::none;
     return true;
   }
 
-  // Restore position mode by setting MODE back to 0
+  // Restore position mode from wheel mode
   bool restore_position_mode(uint8_t servo_id, uint16_t min_angle, uint16_t max_angle) {
-    // Write 0 to MODE register to restore position mode
-    uint8_t mode_params[2];
-    mode_params[0] = to_byte(Register::mode);
-    mode_params[1] = 0;  // 0 = position mode
-    
-    if(!send_command(servo_id, to_byte(Instruction::write), mode_params, 2)) {
-      return false;
+    if (servo_type_ == ServoType::STS) {
+      // STS servos: Write 0 to MODE register to restore position mode
+      uint8_t mode_params[2];
+      mode_params[0] = to_byte(Register::mode);
+      mode_params[1] = 0;  // 0 = position mode
+
+      if(!send_command(servo_id, to_byte(Instruction::write), mode_params, 2)) {
+        return false;
+      }
+
+      uint8_t response[MIN_PACKET_SIZE];
+      if(!read_response(response, MIN_PACKET_SIZE)) {
+        last_error_ = ServoError::no_ack;
+        return false;
+      }
+    } else {
+      // SC servos: Restore angle limits (they don't have wheel mode)
+      // If this is called for SC servo, it's likely coming from PWM mode restore
+      // Restore the angle limits that were saved before entering PWM mode
+      uint8_t params[5];
+      params[0] = to_byte(Register::min_angle_limit_l);
+
+      // Pack min angle using big-endian for SC servos
+      pack_uint16_be(&params[1], min_angle);
+
+      // Pack max angle using big-endian for SC servos
+      pack_uint16_be(&params[3], max_angle);
+
+      if(!send_command(servo_id, to_byte(Instruction::write), params, 5)) {
+        return false;
+      }
+
+      uint8_t response[MIN_PACKET_SIZE];
+      if(!read_response(response, MIN_PACKET_SIZE)) {
+        last_error_ = ServoError::no_ack;
+        return false;
+      }
     }
-    
-    uint8_t response[MIN_PACKET_SIZE];
-    if(!read_response(response, MIN_PACKET_SIZE)) {
-      last_error_ = ServoError::no_ack;
-      return false;
-    }
-    
+
     last_error_ = ServoError::none;
     return true;
   }
@@ -568,6 +641,118 @@ public:
 
     last_error_ = ServoError::none;
     return true;
+  }
+
+  // Set offset calibration (STS servos only)
+  // Offset range: typically -2048 to 2047 (16-bit signed value)
+  bool set_offset(uint8_t servo_id, int16_t offset) {
+    if (servo_type_ != ServoType::STS) {
+      Serial.println("ERROR: Offset calibration only supported on STS servos");
+      last_error_ = ServoError::invalid_parameter;
+      return false;
+    }
+
+    uint8_t parameters[3];
+    parameters[0] = to_byte(Register::ofs_l);
+    pack_uint16(&parameters[1], static_cast<uint16_t>(offset));
+
+    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 3)) {
+      return false;
+    }
+
+    uint8_t response[MIN_PACKET_SIZE];
+    if(!read_response(response, MIN_PACKET_SIZE)) {
+      last_error_ = ServoError::no_ack;
+      return false;
+    }
+
+    last_error_ = ServoError::none;
+    return true;
+  }
+
+  // Read offset calibration (STS servos only)
+  int16_t read_offset(uint8_t servo_id) {
+    if (servo_type_ != ServoType::STS) {
+      Serial.println("ERROR: Offset calibration only supported on STS servos");
+      last_error_ = ServoError::invalid_parameter;
+      return 0;
+    }
+
+    uint8_t parameters[2];
+    parameters[0] = to_byte(Register::ofs_l);
+    parameters[1] = 2;  // Read 2 bytes
+
+    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+      return 0;
+    }
+
+    uint8_t response[MIN_PACKET_SIZE + 2];
+    if(!read_response(response, MIN_PACKET_SIZE + 2)) {
+      last_error_ = ServoError::timeout;
+      return 0;
+    }
+
+    last_error_ = ServoError::none;
+    return static_cast<int16_t>(unpack_uint16(&response[5]));
+  }
+
+  // Set torque limit (STS servos only)
+  // Torque limit range: 0-1023 (default usually 1023 = 100%)
+  bool set_torque_limit(uint8_t servo_id, uint16_t limit) {
+    if (servo_type_ != ServoType::STS) {
+      Serial.println("ERROR: Torque limit only supported on STS servos");
+      last_error_ = ServoError::invalid_parameter;
+      return false;
+    }
+
+    if (limit > 1023) {
+      Serial.println("ERROR: Torque limit must be 0-1023");
+      last_error_ = ServoError::invalid_parameter;
+      return false;
+    }
+
+    uint8_t parameters[3];
+    parameters[0] = to_byte(Register::torque_limit_l);
+    pack_uint16(&parameters[1], limit);
+
+    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 3)) {
+      return false;
+    }
+
+    uint8_t response[MIN_PACKET_SIZE];
+    if(!read_response(response, MIN_PACKET_SIZE)) {
+      last_error_ = ServoError::no_ack;
+      return false;
+    }
+
+    last_error_ = ServoError::none;
+    return true;
+  }
+
+  // Read torque limit (STS servos only)
+  uint16_t read_torque_limit(uint8_t servo_id) {
+    if (servo_type_ != ServoType::STS) {
+      Serial.println("ERROR: Torque limit only supported on STS servos");
+      last_error_ = ServoError::invalid_parameter;
+      return 0;
+    }
+
+    uint8_t parameters[2];
+    parameters[0] = to_byte(Register::torque_limit_l);
+    parameters[1] = 2;  // Read 2 bytes
+
+    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+      return 0;
+    }
+
+    uint8_t response[MIN_PACKET_SIZE + 2];
+    if(!read_response(response, MIN_PACKET_SIZE + 2)) {
+      last_error_ = ServoError::timeout;
+      return 0;
+    }
+
+    last_error_ = ServoError::none;
+    return unpack_uint16(&response[5]);
   }
 
   // Sync write positions to multiple servos at once
