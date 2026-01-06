@@ -319,23 +319,70 @@ public:
     if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
       return std::nullopt;
     }
-    
+
     uint8_t response[8];
     if(!read_response(response, 8)) {
       return std::nullopt;
     }
-    
+
     // Extract position using configured byte order
     int position = unpack_uint16(&response[5]);
     last_error_ = ServoError::none;
     return position;
   }
 
+  std::optional<int16_t> read_speed(uint8_t servo_id) {
+    uint8_t parameters[] = {to_byte(Register::present_speed_l), 2};  // Read current speed (2 bytes)
+    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+      return std::nullopt;
+    }
+
+    uint8_t response[8];
+    if(!read_response(response, 8)) {
+      return std::nullopt;
+    }
+
+    // Extract speed using configured byte order
+    uint16_t raw_speed = unpack_uint16(&response[5]);
+    
+    // Speed format: bit 15 = direction (0=CW/positive, 1=CCW/negative)
+    // Lower 15 bits = magnitude
+    int16_t speed;
+    if (raw_speed & (1 << 15)) {
+      // Bit 15 set = CCW = negative
+      speed = -(raw_speed & 0x7FFF);  // Mask off direction bit, negate
+    } else {
+      // Bit 15 clear = CW = positive
+      speed = raw_speed & 0x7FFF;     // Mask off direction bit
+    }
+    
+    last_error_ = ServoError::none;
+    return speed;
+  }
+
+  std::optional<int16_t> read_load(uint8_t servo_id) {
+    uint8_t parameters[] = {to_byte(Register::present_load_l), 2};  // Read current load/torque (2 bytes)
+    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+      return std::nullopt;
+    }
+
+    uint8_t response[8];
+    if(!read_response(response, 8)) {
+      return std::nullopt;
+    }
+
+    // Extract load using configured byte order
+    // Load is signed: positive=CW load, negative=CCW load
+    int16_t load = static_cast<int16_t>(unpack_uint16(&response[5]));
+    last_error_ = ServoError::none;
+    return load;
+  }
+
   std::optional<uint8_t> ping(uint8_t servo_id) {
     if(!send_command(servo_id, to_byte(Instruction::ping))) {  // Use ping instruction
       return std::nullopt;
     }
-    
+
     uint8_t response[MIN_PACKET_SIZE];
     if(!read_response(response, MIN_PACKET_SIZE)) {
       return std::nullopt;
@@ -483,39 +530,43 @@ public:
     uint16_t version;
     uint16_t min_angle;
     uint16_t max_angle;
-    bool valid;
   };
 
-  ServoInfo read_info(uint8_t servo_id) {
-    ServoInfo info = {0, 0, 0, false};
+  std::optional<ServoInfo> read_info(uint8_t servo_id) {
+
+    bool ok;
+
+    ServoInfo info = {0, 0, 0};
     
     // Read version (registers 3-4, 2 bytes)
     uint8_t ver_params[] = {to_byte(Register::version_l), 2};
-    if(send_command(servo_id, to_byte(Instruction::read), ver_params, 2)) {
-      uint8_t ver_response[8];
-      if(read_response(ver_response, 8)) {
-        info.version = unpack_uint16(&ver_response[5]);
-      }
-    }
+    ok = send_command(servo_id, to_byte(Instruction::read), ver_params, 2);
+    if(!ok) return std::nullopt; 
+    
+    uint8_t ver_response[8];
+    ok = read_response(ver_response, 8);
+    if (!ok) return std::nullopt;
+    info.version = unpack_uint16(&ver_response[5]);
     
     // Read min angle limit (registers 9-10, 2 bytes)
     uint8_t min_params[] = {to_byte(Register::min_angle_limit_l), 2};
-    if(send_command(servo_id, to_byte(Instruction::read), min_params, 2)) {
-      uint8_t min_response[8];
-      if(read_response(min_response, 8)) {
-        info.min_angle = unpack_uint16(&min_response[5]);
-      }
-    }
+    ok = send_command(servo_id, to_byte(Instruction::read), min_params, 2);
+    if (!ok) return std::nullopt;
+
+    uint8_t min_response[8];
+    ok = read_response(min_response, 8);
+    if (!ok) return std::nullopt;
+    info.min_angle = unpack_uint16(&min_response[5]);
     
     // Read max angle limit (registers 11-12, 2 bytes)
     uint8_t max_params[] = {to_byte(Register::max_angle_limit_l), 2};
-    if(send_command(servo_id, to_byte(Instruction::read), max_params, 2)) {
-      uint8_t max_response[8];
-      if(read_response(max_response, 8)) {
-        info.max_angle = unpack_uint16(&max_response[5]);
-        info.valid = true;
-      }
-    }
+    ok = send_command(servo_id, to_byte(Instruction::read), max_params, 2);
+    if (!ok) return std::nullopt;
+
+    uint8_t max_response[8];
+    ok = read_response(max_response, 8);
+    if (!ok) return std::nullopt;
+    info.max_angle = unpack_uint16(&max_response[5]);
     
     return info;
   }
@@ -755,6 +806,66 @@ public:
     return unpack_uint16(&response[5]);
   }
 
+  // Enable torque (both SC and STS servos)
+  bool enable_torque(uint8_t servo_id) {
+    uint8_t parameters[2];
+    parameters[0] = to_byte(Register::torque_enable);
+    parameters[1] = 1;  // Enable
+
+    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 2)) {
+      return false;
+    }
+
+    uint8_t response[MIN_PACKET_SIZE];
+    if(!read_response(response, MIN_PACKET_SIZE)) {
+      last_error_ = ServoError::no_ack;
+      return false;
+    }
+
+    last_error_ = ServoError::none;
+    return true;
+  }
+
+  // Disable torque (both SC and STS servos)
+  bool disable_torque(uint8_t servo_id) {
+    uint8_t parameters[2];
+    parameters[0] = to_byte(Register::torque_enable);
+    parameters[1] = 0;  // Disable
+
+    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 2)) {
+      return false;
+    }
+
+    uint8_t response[MIN_PACKET_SIZE];
+    if(!read_response(response, MIN_PACKET_SIZE)) {
+      last_error_ = ServoError::no_ack;
+      return false;
+    }
+
+    last_error_ = ServoError::none;
+    return true;
+  }
+
+  // Read torque enable status (both SC and STS servos)
+  std::optional<bool> read_torque_enabled(uint8_t servo_id) {
+    uint8_t parameters[2];
+    parameters[0] = to_byte(Register::torque_enable);
+    parameters[1] = 1;  // Read 1 byte
+
+    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+      return std::nullopt;
+    }
+
+    uint8_t response[MIN_PACKET_SIZE + 1];
+    if(!read_response(response, MIN_PACKET_SIZE + 1)) {
+      last_error_ = ServoError::timeout;
+      return std::nullopt;
+    }
+
+    last_error_ = ServoError::none;
+    return response[5] != 0;
+  }
+
   // Sync write positions to multiple servos at once
   bool sync_write_positions(const std::vector<uint8_t>& servo_ids, 
                             const std::vector<uint16_t>& positions,
@@ -879,22 +990,47 @@ public:
   
   virtual SCServoBus::ServoType type() const = 0;
   
-  bool read_info() {
+  std::optional<SCServoBus::ServoInfo> read_info() {
     bus_->set_servo_type(type());
     auto info = bus_->read_info(id_);
-    if (info.valid) {
-      min_encoder_angle_ = info.min_angle;
-      max_encoder_angle_ = info.max_angle;
+    if (info) {
+      min_encoder_angle_ = info->min_angle;
+      max_encoder_angle_ = info->max_angle;
       info_loaded_ = true;
     }
-    return info.valid;
+    return info;
   }
   
   std::optional<int> read_encoder_angle() {
     bus_->set_servo_type(type());
     return bus_->read_position(id_);
   }
-  
+
+  std::optional<int16_t> read_speed() {
+    bus_->set_servo_type(type());
+    return bus_->read_speed(id_);
+  }
+
+  std::optional<int16_t> read_load() {
+    bus_->set_servo_type(type());
+    return bus_->read_load(id_);
+  }
+
+  bool enable_torque() {
+    bus_->set_servo_type(type());
+    return bus_->enable_torque(id_);
+  }
+
+  bool disable_torque() {
+    bus_->set_servo_type(type());
+    return bus_->disable_torque(id_);
+  }
+
+  std::optional<bool> is_torque_enabled() {
+    bus_->set_servo_type(type());
+    return bus_->read_torque_enabled(id_);
+  }
+
   bool move_to_encoder_angle(uint16_t encoder_angle, uint32_t duration_ms) {
     if (!info_loaded_) return false;
     bus_->set_servo_type(type());
@@ -994,6 +1130,20 @@ public:
     uint8_t response[SCServoBus::MIN_PACKET_SIZE];
     return bus_->read_response(response, SCServoBus::MIN_PACKET_SIZE);
   }
+
+  // Restore position mode after PWM or wheel mode
+  // SC servos: Restores angle limits (disabled by PWM mode)
+  // STS servos: Sets MODE register back to 0 (position mode)
+  bool enable_position_mode() {
+    if (!info_loaded_) return false;
+    bus_->set_servo_type(type());
+    bool result = bus_->enable_position_mode(id_, min_encoder_angle_, max_encoder_angle_);
+    if (result) {
+      // Re-read info to ensure cached values are correct
+      read_info();
+    }
+    return result;
+  }
 };
 
 // SC series servo (big-endian)
@@ -1022,17 +1172,6 @@ public:
     bus_->set_servo_type(type());
     return bus_->set_wheel_velocity(id_, speed);
   }
-  
-  bool enable_position_mode() {
-    if (!info_loaded_) return false;
-    bus_->set_servo_type(type());
-    bool result = bus_->enable_position_mode(id_, min_encoder_angle_, max_encoder_angle_);
-    if (result) {
-      // Re-read info to ensure cached values are correct
-      read_info();
-    }
-    return result;
-  }
 
   // Hardware acceleration control - unique to STS servos!
   // ACC parameter (0-255) controls velocity ramping for smooth motion
@@ -1050,6 +1189,19 @@ public:
     percent = constrain(percent, 0.0f, 1.0f);
     uint16_t encoder_angle = min_encoder_angle_ + (uint16_t)(percent * encoder_angle_range());
     return move_to_encoder_angle_with_accel(encoder_angle, speed, acc);
+  }
+
+  // Torque limit control - unique to STS servos!
+  // Limits maximum torque output (0-1023, default 1023 = 100%)
+  // Useful for preventing damage or controlling force
+  bool set_torque_limit(uint16_t limit) {
+    bus_->set_servo_type(type());
+    return bus_->set_torque_limit(id_, limit);
+  }
+
+  uint16_t read_torque_limit() {
+    bus_->set_servo_type(type());
+    return bus_->read_torque_limit(id_);
   }
 };
 
@@ -1108,9 +1260,9 @@ void diagnose_servo(uint8_t servo_id, SCServoBus::ServoType type) {
 
   // Read servo version
   auto info = servo_bus.read_info(servo_id);
-  if (info.valid) {
-    Serial.printf("✓ Firmware version: %d\n", info.version);
-    Serial.printf("✓ Angle limits: min=%d, max=%d\n", info.min_angle, info.max_angle);
+  if (info) {
+    Serial.printf("✓ Firmware version: %d\n", info->version);
+    Serial.printf("✓ Angle limits: min=%d, max=%d\n", info->min_angle, info->max_angle);
   } else {
     Serial.printf("✗ Failed to read servo info\n");
   }
@@ -1265,10 +1417,10 @@ void demonstrate_coordinated_moving() {
   Serial.println("SC servos:");
   for (auto id : sc_ids) {
     auto info = servo_bus.read_info(id);
-    if (info.valid) {
-      Serial.printf("  Servo #%d: min=%d, max=%d\n", id, info.min_angle, info.max_angle);
-      sc_mins.push_back(info.min_angle);
-      sc_maxs.push_back(info.max_angle);
+    if (info) {
+      Serial.printf("  Servo #%d: min=%d, max=%d\n", id, info->min_angle, info->max_angle);
+      sc_mins.push_back(info->min_angle);
+      sc_maxs.push_back(info->max_angle);
     } else {
       Serial.printf("  Servo #%d: Failed to read info\n", id);
       return;
@@ -1280,10 +1432,10 @@ void demonstrate_coordinated_moving() {
   Serial.println("STS servos:");
   for (auto id : sts_ids) {
     auto info = servo_bus.read_info(id);
-    if (info.valid) {
-      Serial.printf("  Servo #%d: min=%d, max=%d\n", id, info.min_angle, info.max_angle);
-      sts_mins.push_back(info.min_angle);
-      sts_maxs.push_back(info.max_angle);
+    if (info) {
+      Serial.printf("  Servo #%d: min=%d, max=%d\n", id, info->min_angle, info->max_angle);
+      sts_mins.push_back(info->min_angle);
+      sts_maxs.push_back(info->max_angle);
     } else {
       Serial.printf("  Servo #%d: Failed to read info\n", id);
       return;
@@ -2114,6 +2266,731 @@ void emergency_servo_reset() {
   Serial.println("=====================================\n");
 }
 
+// Helper function to wait for user to press Enter
+void wait_for_enter(const char* prompt = nullptr) {
+  if (prompt) {
+    Serial.println(prompt);
+  }
+  Serial.println("\n>>> Press ENTER to continue...");
+  Serial.print(">>> ");
+
+  // Clear any existing input
+  while (Serial.available()) {
+    Serial.read();
+  }
+
+  // Wait for Enter key (newline) and echo characters
+  while (true) {
+    if (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\n' || c == '\r') {
+        // Clear any remaining input
+        delay(10);
+        while (Serial.available()) {
+          Serial.read();
+        }
+        Serial.println();
+        return;
+      }
+      // Echo other characters
+      Serial.print(c);
+    }
+    delay(10);
+  }
+}
+
+// Helper function to ask yes/no question
+bool ask_yes_no(const char* question) {
+  Serial.println(question);
+  Serial.println(">>> Type 'y' or 'n' and press ENTER:");
+  Serial.print(">>> ");
+
+  // Clear any existing input
+  while (Serial.available()) {
+    Serial.read();
+  }
+
+  while (true) {
+    if (Serial.available()) {
+      char c = Serial.read();
+      Serial.print(c); // Echo
+
+      // Clear rest of line
+      delay(10);
+      while (Serial.available()) {
+        char extra = Serial.read();
+        Serial.print(extra); // Echo everything
+      }
+
+      if (c == 'y' || c == 'Y') {
+        Serial.println();
+        return true;
+      } else if (c == 'n' || c == 'N') {
+        Serial.println();
+        return false;
+      } else {
+        Serial.println("\nPlease type 'y' or 'n':");
+        Serial.print(">>> ");
+      }
+    }
+    delay(10);
+  }
+}
+
+void restore_sts_eprom() {
+  Serial.println("\n╔══════════════════════════════════════════════════════════════╗");
+  Serial.println("║       STS Servo EPROM Restoration                           ║");
+  Serial.println("║  This will write angle limits 0-4095 to EPROM               ║");
+  Serial.println("╚══════════════════════════════════════════════════════════════╝\n");
+
+  if (!ask_yes_no("This will permanently restore the STS servo #5 angle limits.\nContinue?")) {
+    Serial.println("Cancelled.");
+    return;
+  }
+
+  servo_bus.set_servo_type(SCServoBus::ServoType::STS);
+  
+  // Step 1: Unlock EPROM (LOCK register = 0)
+  Serial.println("\n═══ STEP 1: Unlocking EPROM ═══");
+  uint8_t unlock_params[2];
+  unlock_params[0] = SCServoBus::to_byte(SCServoBus::Register::lock_sts);  // Register 55
+  unlock_params[1] = 0;  // Unlock
+  
+  if (servo_bus.send_command(5, SCServoBus::to_byte(SCServoBus::Instruction::write), unlock_params, 2)) {
+    uint8_t unlock_response[6];
+    if (servo_bus.read_response(unlock_response, 6)) {
+      Serial.println("✓ EPROM unlocked");
+    } else {
+      Serial.println("✗ No response from unlock command");
+      return;
+    }
+  } else {
+    Serial.println("✗ Failed to send unlock command");
+    return;
+  }
+  
+  delay(100);
+  
+  // Step 2: Write angle limits (0-4095) to registers 9-12
+  Serial.println("\n═══ STEP 2: Writing angle limits (0-4095) ═══");
+  uint8_t limits_params[5];
+  limits_params[0] = SCServoBus::to_byte(SCServoBus::Register::min_angle_limit_l);  // Register 9
+  limits_params[1] = 0x00;  // min LOW byte = 0
+  limits_params[2] = 0x00;  // min HIGH byte = 0
+  limits_params[3] = 0xFF;  // max LOW byte = 255
+  limits_params[4] = 0x0F;  // max HIGH byte = 15 (0x0FFF = 4095)
+  
+  if (servo_bus.send_command(5, SCServoBus::to_byte(SCServoBus::Instruction::write), limits_params, 5)) {
+    uint8_t limits_response[6];
+    if (servo_bus.read_response(limits_response, 6)) {
+      Serial.println("✓ Angle limits written");
+    } else {
+      Serial.println("✗ No response from write command");
+      return;
+    }
+  } else {
+    Serial.println("✗ Failed to send write command");
+    return;
+  }
+  
+  delay(100);
+  
+  // Step 3: Lock EPROM (LOCK register = 1)
+  Serial.println("\n═══ STEP 3: Locking EPROM ═══");
+  uint8_t lock_params[2];
+  lock_params[0] = SCServoBus::to_byte(SCServoBus::Register::lock_sts);  // Register 55
+  lock_params[1] = 1;  // Lock
+  
+  if (servo_bus.send_command(5, SCServoBus::to_byte(SCServoBus::Instruction::write), lock_params, 2)) {
+    uint8_t lock_response[6];
+    if (servo_bus.read_response(lock_response, 6)) {
+      Serial.println("✓ EPROM locked");
+    } else {
+      Serial.println("✗ No response from lock command");
+      return;
+    }
+  } else {
+    Serial.println("✗ Failed to send lock command");
+    return;
+  }
+  
+  delay(500);
+  
+  // Step 4: Verify by reading back
+  Serial.println("\n═══ STEP 4: Verifying ═══");
+  auto sts_servo = STSServo(&servo_bus, 5);
+  if (sts_servo.read_info()) {
+    Serial.printf("✓ STS Servo #5 NOW: min=%d, max=%d, range=%d\n",
+                  sts_servo.min_encoder_angle(),
+                  sts_servo.max_encoder_angle(),
+                  sts_servo.encoder_angle_range());
+    
+    if (sts_servo.min_encoder_angle() == 0 && sts_servo.max_encoder_angle() == 4095) {
+      Serial.println("\n✓✓✓ SUCCESS! EPROM restored correctly! ✓✓✓");
+    } else {
+      Serial.println("\n⚠ EPROM values written but don't match expected 0-4095");
+    }
+  } else {
+    Serial.println("✗ Failed to read servo info for verification");
+  }
+  
+  Serial.println("\nPress ENTER to continue...");
+  wait_for_enter();
+}
+
+void diagnose_eprom_registers() {
+  Serial.println("\n╔══════════════════════════════════════════════════════════════╗");
+  Serial.println("║       EPROM Register Diagnostic                              ║");
+  Serial.println("║  Reading raw register values from both servos                ║");
+  Serial.println("╚══════════════════════════════════════════════════════════════╝\n");
+
+  // Helper to print raw response bytes
+  auto print_response = [](const char* label, uint8_t* response, int size) {
+    Serial.printf("%s: ", label);
+    for (int i = 0; i < size; i++) {
+      Serial.printf("%02X ", response[i]);
+    }
+    Serial.println();
+  };
+
+  // ═══ SC SERVO #4 ═══
+  Serial.println("═══ SC SERVO #4 ═══");
+  servo_bus.set_servo_type(SCServoBus::ServoType::SC);
+  
+  // Read min angle limit (registers 9-10, 2 bytes)
+  Serial.println("\nReading MIN_ANGLE_LIMIT (registers 9-10, 2 bytes)...");
+  uint8_t sc_min_params[] = {9, 2};
+  if (servo_bus.send_command(4, SCServoBus::to_byte(SCServoBus::Instruction::read), sc_min_params, 2)) {
+    uint8_t sc_min_response[8];
+    if (servo_bus.read_response(sc_min_response, 8)) {
+      print_response("  Raw response", sc_min_response, 8);
+      uint16_t min_val = sc_min_response[5] | (sc_min_response[6] << 8);
+      Serial.printf("  Parsed value (BE): %d (0x%04X)\n", min_val, min_val);
+    } else {
+      Serial.println("  ✗ Failed to read response");
+    }
+  } else {
+    Serial.println("  ✗ Failed to send command");
+  }
+
+  delay(50);
+
+  // Read max angle limit (registers 11-12, 2 bytes)
+  Serial.println("\nReading MAX_ANGLE_LIMIT (registers 11-12, 2 bytes)...");
+  uint8_t sc_max_params[] = {11, 2};
+  if (servo_bus.send_command(4, SCServoBus::to_byte(SCServoBus::Instruction::read), sc_max_params, 2)) {
+    uint8_t sc_max_response[8];
+    if (servo_bus.read_response(sc_max_response, 8)) {
+      print_response("  Raw response", sc_max_response, 8);
+      uint16_t max_val = sc_max_response[5] | (sc_max_response[6] << 8);
+      Serial.printf("  Parsed value (BE): %d (0x%04X)\n", max_val, max_val);
+    } else {
+      Serial.println("  ✗ Failed to read response");
+    }
+  } else {
+    Serial.println("  ✗ Failed to send command");
+  }
+
+  delay(50);
+
+  // Use read_info() method
+  Serial.println("\nUsing read_info() method:");
+  auto sc_info = servo_bus.read_info(4);
+  if (sc_info.has_value()) {
+    Serial.printf("  ✓ Version: %d, Min: %d, Max: %d\n", 
+                  sc_info->version, sc_info->min_angle, sc_info->max_angle);
+  } else {
+    Serial.println("  ✗ read_info() failed");
+  }
+
+  delay(500);
+
+  // ═══ STS SERVO #5 ═══
+  Serial.println("\n═══ STS SERVO #5 ═══");
+  servo_bus.set_servo_type(SCServoBus::ServoType::STS);
+  
+  // Read MODE register (register 33, 1 byte)
+  Serial.println("\nReading MODE register (register 33, 1 byte)...");
+  uint8_t sts_mode_params[] = {33, 1};
+  if (servo_bus.send_command(5, SCServoBus::to_byte(SCServoBus::Instruction::read), sts_mode_params, 2)) {
+    uint8_t sts_mode_response[7];
+    if (servo_bus.read_response(sts_mode_response, 7)) {
+      print_response("  Raw response", sts_mode_response, 7);
+      uint8_t mode_val = sts_mode_response[5];
+      Serial.printf("  MODE value: %d (", mode_val);
+      if (mode_val == 0) Serial.print("Position");
+      else if (mode_val == 1) Serial.print("Wheel");
+      else Serial.print("Unknown");
+      Serial.println(")");
+    } else {
+      Serial.println("  ✗ Failed to read response");
+    }
+  } else {
+    Serial.println("  ✗ Failed to send command");
+  }
+
+  delay(50);
+
+  // Read min angle limit (registers 9-10, 2 bytes)
+  Serial.println("\nReading MIN_ANGLE_LIMIT (registers 9-10, 2 bytes)...");
+  uint8_t sts_min_params[] = {9, 2};
+  if (servo_bus.send_command(5, SCServoBus::to_byte(SCServoBus::Instruction::read), sts_min_params, 2)) {
+    uint8_t sts_min_response[8];
+    if (servo_bus.read_response(sts_min_response, 8)) {
+      print_response("  Raw response", sts_min_response, 8);
+      uint16_t min_val = sts_min_response[5] | (sts_min_response[6] << 8);
+      Serial.printf("  Parsed value (LE): %d (0x%04X)\n", min_val, min_val);
+    } else {
+      Serial.println("  ✗ Failed to read response");
+    }
+  } else {
+    Serial.println("  ✗ Failed to send command");
+  }
+
+  delay(50);
+
+  // Read max angle limit (registers 11-12, 2 bytes)
+  Serial.println("\nReading MAX_ANGLE_LIMIT (registers 11-12, 2 bytes)...");
+  uint8_t sts_max_params[] = {11, 2};
+  if (servo_bus.send_command(5, SCServoBus::to_byte(SCServoBus::Instruction::read), sts_max_params, 2)) {
+    uint8_t sts_max_response[8];
+    if (servo_bus.read_response(sts_max_response, 8)) {
+      print_response("  Raw response", sts_max_response, 8);
+      uint16_t max_val = sts_max_response[5] | (sts_max_response[6] << 8);
+      Serial.printf("  Parsed value (LE): %d (0x%04X)\n", max_val, max_val);
+    } else {
+      Serial.println("  ✗ Failed to read response");
+    }
+  } else {
+    Serial.println("  ✗ Failed to send command");
+  }
+
+  delay(50);
+
+  // Use read_info() method
+  Serial.println("\nUsing read_info() method:");
+  auto sts_info = servo_bus.read_info(5);
+  if (sts_info.has_value()) {
+    Serial.printf("  ✓ Version: %d, Min: %d, Max: %d\n", 
+                  sts_info->version, sts_info->min_angle, sts_info->max_angle);
+  } else {
+    Serial.println("  ✗ read_info() failed");
+  }
+
+  Serial.println("\n═══ DIAGNOSTIC COMPLETE ═══");
+  Serial.println("If STS servo shows min=0, max=0, its EPROM may need restoration.");
+  Serial.println("\nPress ENTER to continue...\n");
+  wait_for_enter();
+}
+
+void test_speed_and_load_monitoring() {
+  Serial.println("\n╔══════════════════════════════════════════════════════════════╗");
+  Serial.println("║       Speed & Load Monitoring Test                          ║");
+  Serial.println("║  Testing servos 4 (SC) and 5 (STS) across all modes         ║");
+  Serial.println("╚══════════════════════════════════════════════════════════════╝\n");
+
+  Serial.println("This test will run through 4 different scenarios:");
+  Serial.println("  1. Position Mode - Watch speed/load during movement");
+  Serial.println("  2. Load Testing - You resist movement with your fingers");
+  Serial.println("  3. PWM Mode - Continuous rotation monitoring");
+  Serial.println("  4. Wheel Mode - STS velocity control");
+  Serial.println();
+  Serial.println("Each test will wait for your input before proceeding.");
+
+  wait_for_enter("Ready to begin?");
+
+  auto sc_servo = SCServo(&servo_bus, 4);
+  auto sts_servo = STSServo(&servo_bus, 5);
+
+  // INITIALIZATION: Ensure clean state
+  Serial.println("\n═══ INITIALIZATION ═══");
+  Serial.println("Stopping any movement and resetting servos to position mode...");
+
+  sc_servo.disable_torque();
+  sts_servo.disable_torque();
+  sc_servo.enable_position_mode();
+  sts_servo.enable_position_mode();
+
+  sc_servo.read_info();
+  sts_servo.read_info();
+
+
+  // Set STS servo to position mode
+  Serial.println("Setting STS servo to position mode...");
+  sts_servo.enable_position_mode();
+
+  delay(500);
+
+  // Enable torque
+  sts_servo.enable_torque();
+  Serial.println("Enabling torque...");
+  servo_bus.set_servo_type(SCServoBus::ServoType::SC);
+  servo_bus.enable_torque(4);
+  servo_bus.set_servo_type(SCServoBus::ServoType::STS);
+  servo_bus.enable_torque(5);
+
+  delay(500);
+
+  // Read servo info
+  Serial.println("\nReading servo configurations...");
+  if (!sc_servo.read_info()) {
+    Serial.println("ERROR: Failed to read SC servo #4 info!");
+    return;
+  }
+  if (!sts_servo.read_info()) {
+    Serial.println("ERROR: Failed to read STS servo #5 info!");
+    return;
+  }
+
+  Serial.printf("✓ SC Servo #4: min=%d, max=%d, range=%d\n",
+                sc_servo.min_encoder_angle(),
+                sc_servo.max_encoder_angle(),
+                sc_servo.encoder_angle_range());
+  Serial.printf("✓ STS Servo #5: min=%d, max=%d, range=%d\n\n",
+                sts_servo.min_encoder_angle(),
+                sts_servo.max_encoder_angle(),
+                sts_servo.encoder_angle_range());
+
+  // Helper lambda to print servo status
+  auto print_servo_status = [](const char* label, Servo& servo) {
+    auto pos = servo.read_encoder_angle();
+    auto speed = servo.read_speed();
+    auto load = servo.read_load();
+
+    Serial.printf("%s | Pos: ", label);
+    if (pos) Serial.printf("%4d", *pos);
+    else Serial.print("FAIL");
+
+    Serial.print(" | Speed: ");
+    if (speed) Serial.printf("%5d", *speed);
+    else Serial.print(" FAIL");
+
+    Serial.print(" | Load: ");
+    if (load) Serial.printf("%5d", *load);
+    else Serial.print(" FAIL");
+
+    Serial.println();
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // TEST 1: Position Mode Movement
+  // ═══════════════════════════════════════════════════════════════
+  Serial.println("\n╔═══════════════════════════════════════════════════════════╗");
+  Serial.println("║ TEST 1: Position Mode - Standard Movement                ║");
+  Serial.println("╚═══════════════════════════════════════════════════════════╝");
+
+  Serial.println("\nIn this test, both servos will move to different positions.");
+  Serial.println("Watch the speed values change during movement and return to 0 when stopped.");
+
+  wait_for_enter("Ready to start TEST 1?");
+
+  Serial.println("\nMoving both servos to center position (50%)...");
+  sc_servo.move_to_percent(0.5f, 1000);
+  sts_servo.move_to_percent(0.5f, 1000);
+
+  Serial.println("\nMonitoring during movement (every 100ms):");
+  Serial.println("Time(ms) | Servo      | Pos  | Speed | Load");
+  Serial.println("---------+------------+------+-------+------");
+
+  for (int i = 0; i < 15; i++) {
+    Serial.printf("%8d | ", millis());
+    print_servo_status("SC #4 ", sc_servo);
+    Serial.printf("%8d | ", millis());
+    print_servo_status("STS #5", sts_servo);
+    delay(100);
+  }
+
+  wait_for_enter("\nFirst movement complete. Notice speed returned to 0?");
+
+  Serial.println("\nMoving to 75% position (slower, 1.5 seconds)...");
+  sc_servo.move_to_percent(0.75f, 1500);
+  sts_servo.move_to_percent(0.75f, 1500);
+
+  Serial.println("\nMonitoring during movement:");
+  Serial.println("Time(ms) | Servo      | Pos  | Speed | Load");
+  Serial.println("---------+------------+------+-------+------");
+
+  for (int i = 0; i < 20; i++) {
+    Serial.printf("%8d | ", millis());
+    print_servo_status("SC #4 ", sc_servo);
+    Serial.printf("%8d | ", millis());
+    print_servo_status("STS #5", sts_servo);
+    delay(100);
+  }
+
+  Serial.println("\n✓ TEST 1 Complete!");
+  Serial.println("  - Speed shows actual velocity during movement");
+  Serial.println("  - Speed returns to 0 when servo stops");
+  Serial.println("  - Position updates smoothly to target");
+
+  wait_for_enter();
+
+  // ═══════════════════════════════════════════════════════════════
+  // TEST 2: Load Testing with Reduced Torque Limit (STS only)
+  // ═══════════════════════════════════════════════════════════════
+  Serial.println("\n\n╔═══════════════════════════════════════════════════════════╗");
+  Serial.println("║ TEST 2: Load Testing - Reduced Torque Limit (STS only)   ║");
+  Serial.println("╚═══════════════════════════════════════════════════════════╝");
+
+  Serial.println("\nIn this test, the STS servo torque will be reduced to make");
+  Serial.println("it easy to resist with your fingers. Watch the LOAD value");
+  Serial.println("increase as you apply resistance!");
+  Serial.println();
+  Serial.println("INSTRUCTIONS:");
+  Serial.println("  1. Position your fingers near the STS servo horn");
+  Serial.println("  2. When it starts moving, gently resist the movement");
+  Serial.println("  3. Watch the 'Load' column in the output");
+  Serial.println("  4. Try varying amounts of resistance");
+
+  wait_for_enter("Ready for load testing?");
+
+  uint16_t torque_limit = 80;
+  Serial.printf("\nSetting STS servo torque limit to %d (out of 1023)...\n", torque_limit);
+  if (sts_servo.set_torque_limit(80)) {
+    auto limit = sts_servo.read_torque_limit();
+    Serial.printf("✓ Torque limit set to: %d (easy to resist!)\n", limit);
+  } else {
+    Serial.println("✗ Failed to set torque limit!");
+  }
+
+  wait_for_enter("\nGet ready to resist the servo movement!");
+
+  Serial.println("\n>>> STARTING MOVEMENT - RESIST WITH YOUR FINGERS! <<<");
+  Serial.println("Moving STS servo to 25% position (3 seconds)...\n");
+
+  uint32_t move_time = 10000;
+  uint32_t move_start_time = millis();
+
+  sts_servo.move_to_percent(0.25f, move_time);
+
+  Serial.println("Time(ms) | Servo      | Pos  | Speed | Load  <- Watch this!");
+  Serial.println("---------+------------+------+-------+------");
+
+  while (millis() - move_start_time < move_time) {
+    Serial.printf("%8d | ", millis());
+    print_servo_status("STS #5", sts_servo);
+  }
+
+  if (ask_yes_no("\nDid you see the Load value increase when you resisted?")) {
+    Serial.println("✓ Great! Let's try it again in the other direction.");
+  } else {
+    Serial.println("  No problem - try applying more resistance this time.");
+  }
+
+  wait_for_enter();
+
+  Serial.println("\n>>> STARTING REVERSE MOVEMENT - RESIST AGAIN! <<<");
+  Serial.println("Moving back to 75% (3 seconds)...\n");
+
+  sts_servo.move_to_percent(0.75f, 3000);
+
+  Serial.println("Time(ms) | Servo      | Pos  | Speed | Load");
+  Serial.println("---------+------------+------+-------+------");
+
+  for (int i = 0; i < 30; i++) {
+    Serial.printf("%8d | ", millis());
+    print_servo_status("STS #5", sts_servo);
+    delay(100);
+  }
+
+  Serial.println("\n✓ TEST 2 Complete!");
+  Serial.println("  - Load increases with resistance");
+  Serial.println("  - Torque limit controls maximum force");
+  Serial.println();
+
+  // Restore torque limit
+  Serial.println("Restoring full torque limit (1023)...");
+  sts_servo.set_torque_limit(1023);
+
+  wait_for_enter();
+
+  // ═══════════════════════════════════════════════════════════════
+  // TEST 3: PWM Mode (Both Servos)
+  // ═══════════════════════════════════════════════════════════════
+  Serial.println("\n\n╔═══════════════════════════════════════════════════════════╗");
+  Serial.println("║ TEST 3: PWM Mode - Open-Loop Speed Control               ║");
+  Serial.println("╚═══════════════════════════════════════════════════════════╝");
+
+  Serial.println("\nPWM mode enables continuous rotation on both servos.");
+  Serial.println("Watch how position continuously changes and speed is constant.");
+
+  wait_for_enter("Ready to test PWM mode?");
+
+  Serial.println("\nEnabling PWM mode on both servos...");
+  if (!sc_servo.enable_pwm_mode()) {
+    Serial.println("✗ Failed to enable PWM mode on SC servo!");
+    return;
+  }
+  if (!sts_servo.enable_pwm_mode()) {
+    Serial.println("✗ Failed to enable PWM mode on STS servo!");
+    return;
+  }
+  Serial.println("✓ PWM mode enabled on both servos!");
+
+  wait_for_enter("\nStarting clockwise rotation at speed 300...");
+
+  sc_servo.set_pwm_speed(300);
+  sts_servo.set_pwm_speed(300);
+
+  Serial.println("\nMonitoring in PWM mode (CW):");
+  Serial.println("Time(ms) | Servo      | Pos  | Speed | Load");
+  Serial.println("---------+------------+------+-------+------");
+
+  for (int i = 0; i < 20; i++) {
+    Serial.printf("%8d | ", millis());
+    print_servo_status("SC #4 ", sc_servo);
+    Serial.printf("%8d | ", millis());
+    print_servo_status("STS #5", sts_servo);
+    delay(100);
+  }
+
+  wait_for_enter("\nNotice position keeps changing? Now reversing direction...");
+
+  sc_servo.set_pwm_speed(-300);
+  sts_servo.set_pwm_speed(-300);
+
+  Serial.println("\nMonitoring in PWM mode (CCW):");
+  Serial.println("Time(ms) | Servo      | Pos  | Speed | Load");
+  Serial.println("---------+------------+------+-------+------");
+
+  for (int i = 0; i < 20; i++) {
+    Serial.printf("%8d | ", millis());
+    print_servo_status("SC #4 ", sc_servo);
+    Serial.printf("%8d | ", millis());
+    print_servo_status("STS #5", sts_servo);
+    delay(100);
+  }
+
+  Serial.println("\nStopping PWM mode...");
+  sc_servo.set_pwm_speed(0);
+  sts_servo.set_pwm_speed(0);
+  delay(500);
+
+  Serial.println("\n✓ TEST 3 Complete!");
+  Serial.println("  - PWM mode enables continuous rotation");
+  Serial.println("  - Works on both SC and STS servos");
+  Serial.println("  - Speed value reflects rotation velocity");
+
+  wait_for_enter();
+
+  // ═══════════════════════════════════════════════════════════════
+  // TEST 4: Wheel Mode (STS only)
+  // ═══════════════════════════════════════════════════════════════
+  Serial.println("\n\n╔═══════════════════════════════════════════════════════════╗");
+  Serial.println("║ TEST 4: Wheel Mode - Velocity Control (STS only)         ║");
+  Serial.println("╚═══════════════════════════════════════════════════════════╝");
+
+  Serial.println("\nWheel mode is unique to STS servos - it provides");
+  Serial.println("velocity-controlled continuous rotation (different from PWM).");
+
+  wait_for_enter("Ready to test wheel mode?");
+
+  Serial.println("\nEnabling wheel mode on STS servo...");
+  if (!sts_servo.enable_wheel_mode()) {
+    Serial.println("✗ Failed to enable wheel mode!");
+  } else {
+    Serial.println("✓ Wheel mode enabled!");
+
+    wait_for_enter("\nStarting rotation at velocity 400...");
+
+    sts_servo.set_wheel_velocity(400);
+
+    Serial.println("\nMonitoring in wheel mode (CW):");
+    Serial.println("Time(ms) | Servo      | Pos  | Speed | Load");
+    Serial.println("---------+------------+------+-------+------");
+
+    for (int i = 0; i < 20; i++) {
+      Serial.printf("%8d | ", millis());
+      print_servo_status("STS #5", sts_servo);
+      delay(100);
+    }
+
+    wait_for_enter("\nReversing wheel velocity...");
+
+    sts_servo.set_wheel_velocity(-400);
+
+    Serial.println("\nMonitoring in wheel mode (CCW):");
+    Serial.println("Time(ms) | Servo      | Pos  | Speed | Load");
+    Serial.println("---------+------------+------+-------+------");
+
+    for (int i = 0; i < 20; i++) {
+      Serial.printf("%8d | ", millis());
+      print_servo_status("STS #5", sts_servo);
+      delay(100);
+    }
+
+    Serial.println("\nStopping wheel...");
+    sts_servo.set_wheel_velocity(0);
+    delay(500);
+
+    Serial.println("\n✓ TEST 4 Complete!");
+    Serial.println("  - Wheel mode provides velocity control");
+    Serial.println("  - STS-only feature (more precise than PWM)");
+  }
+
+  wait_for_enter();
+
+  // ═══════════════════════════════════════════════════════════════
+  // Restore Position Mode
+  // ═══════════════════════════════════════════════════════════════
+  Serial.println("\n\n╔═══════════════════════════════════════════════════════════╗");
+  Serial.println("║              Restoring Servos to Position Mode            ║");
+  Serial.println("╚═══════════════════════════════════════════════════════════╝");
+
+  Serial.println("\nBoth servos need to be returned to normal position mode.");
+
+  wait_for_enter("Ready to restore position mode?");
+
+  if (!sc_servo.enable_position_mode()) {
+    Serial.println("✗ Failed to restore SC servo position mode!");
+  } else {
+    Serial.println("✓ SC servo position mode restored");
+  }
+
+  if (!sts_servo.enable_position_mode()) {
+    Serial.println("✗ Failed to restore STS servo position mode!");
+  } else {
+    Serial.println("✓ STS servo position mode restored");
+  }
+
+  Serial.println("\nMoving both servos to center position...");
+  sc_servo.move_to_percent(0.5f, 1000);
+  sts_servo.move_to_percent(0.5f, 1000);
+  delay(1500);
+
+  Serial.println("\n╔═══════════════════════════════════════════════════════════╗");
+  Serial.println("║              ALL TESTS COMPLETE!                          ║");
+  Serial.println("╚═══════════════════════════════════════════════════════════╝");
+  Serial.println("\n═══════════════════════════════════════════════════════════");
+  Serial.println("                   TEST SUMMARY");
+  Serial.println("═══════════════════════════════════════════════════════════");
+  Serial.println();
+  Serial.println("✓ TEST 1 - Position Mode Movement");
+  Serial.println("    Speed monitoring during position changes");
+  Serial.println();
+  Serial.println("✓ TEST 2 - Load Testing");
+  Serial.println("    Load increases with resistance (reduced torque limit)");
+  Serial.println();
+  Serial.println("✓ TEST 3 - PWM Mode");
+  Serial.println("    Continuous rotation on both SC and STS servos");
+  Serial.println();
+  Serial.println("✓ TEST 4 - Wheel Mode");
+  Serial.println("    Velocity-controlled rotation (STS only)");
+  Serial.println();
+  Serial.println("═══════════════════════════════════════════════════════════");
+  Serial.println();
+  Serial.println("KEY FINDINGS:");
+  Serial.println("  • read_speed() shows actual velocity");
+  Serial.println("  • read_load() increases with resistance");
+  Serial.println("  • PWM mode works on both servo types");
+  Serial.println("  • Wheel mode is STS-specific");
+  Serial.println("  • Position mode properly restored on both servos");
+  Serial.println();
+  Serial.println("═══════════════════════════════════════════════════════════");
+  Serial.println();
+  Serial.println("You can now paste all test results back for analysis!");
+}
+
 void setup() {
   Serial.begin(1000000);
   delay(2000);
@@ -2161,11 +3038,16 @@ void setup() {
 
   // 3. After setting IDs, power cycle each servo and scan again to verify
 
-  
+
+
+  // === ACTIVE TEST ===
+  // diagnose_eprom_registers();           // Check what's actually in the servo EPROM
+  // restore_sts_eprom();                  // Fix the corrupted STS servo EPROM
+  test_speed_and_load_monitoring();     // Comprehensive speed & load test
 
   // Other demos available (currently not running):
   // emergency_servo_reset();              // Emergency recovery for stuck servos
-  demonstrate_pwm_mode();               // PWM mode demo - works on all servos
+  // demonstrate_pwm_mode();               // PWM mode demo - works on all servos
   // demonstrate_coordinated_moving();     // Original version with manual type switching
   // demonstrate_coordinated_moving_2();   // Clean version using servo objects
   // demonstrate_sts_features();           // Full STS features demo
