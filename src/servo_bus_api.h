@@ -1,5 +1,5 @@
 #pragma once
-
+// this class exposes APIs for low level SC and STS bus servo protocol
 class ServoBusApi {
 public:
   // Protocol byte constants
@@ -204,7 +204,7 @@ public:
   inline ServoError last_error() const { return last_error_; }
   inline void clear_error() { last_error_ = ServoError::none; }
 
-  bool send_command(uint8_t id, uint8_t instruction, uint8_t* parameters = nullptr, int parameter_count = 0) {
+  bool send_command(uint8_t servo_id, Instruction instruction, uint8_t* parameters = nullptr, int parameter_count = 0) {
     const int max_parameter_count = max_servo_count + 2;
     if (parameter_count > max_parameter_count) {
       last_error_ = ServoError::invalid_parameter;
@@ -227,9 +227,9 @@ public:
     // Build packet
     packet[to_index(PacketOffset::header_1)] = to_byte(Protocol::header_byte_1);
     packet[to_index(PacketOffset::header_2)] = to_byte(Protocol::header_byte_2);
-    packet[to_index(PacketOffset::id)] = id;
+    packet[to_index(PacketOffset::id)] = servo_id;
     packet[to_index(PacketOffset::length)] = INSTRUCTION_OVERHEAD + parameter_count;  // LENGTH = instruction byte + parameters
-    packet[to_index(PacketOffset::instruction)] = instruction;
+    packet[to_index(PacketOffset::instruction)] = to_byte(instruction);
     
     // Copy parameters
     for(int i = 0; i < parameter_count; i++) {
@@ -237,16 +237,12 @@ public:
     }
     
     // Calculate and append checksum
-    packet[to_index(PacketOffset::parameters) + parameter_count] = calculate_checksum(id, packet[to_index(PacketOffset::length)], instruction, parameters, parameter_count);
+    packet[to_index(PacketOffset::parameters) + parameter_count] = calculate_checksum(servo_id, packet[to_index(PacketOffset::length)], to_byte(instruction), parameters, parameter_count);
     
     int packet_size = MIN_PACKET_SIZE + parameter_count;
     
     // Send packet
     bus_serial_->write(packet, packet_size);
-    
-    // Broadcast messages (ID 0xFE) don't produce echo, but still need to wait for transmission
-    // Actually, they DO produce echo on half-duplex serial, we just don't wait for ACK responses
-    bool is_broadcast = (id == to_byte(Protocol::broadcast_id));
     
     // Discard echo bytes as they arrive during transmission
     int echo_count = 0;
@@ -328,7 +324,7 @@ public:
     id_params[0] = to_byte(Register::id);
     id_params[1] = new_id;
 
-    if (!send_command(current_id, to_byte(Instruction::write), id_params, 2)) {
+    if (!send_command(current_id, Instruction::write, id_params, 2)) {
       Serial.println("✗ ERROR: Failed to send ID write command");
       // Try to re-lock before returning
       write_byte(new_id, lock_reg, 1);  // Use new_id since servo may have changed
@@ -423,9 +419,12 @@ public:
     return true;
   }
 
+
+
+
   std::optional<int> read_position(uint8_t servo_id) {
     uint8_t parameters[] = {to_byte(Register::present_position_l), 2};  // Read current position (2 bytes)
-    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
       return std::nullopt;
     }
 
@@ -442,7 +441,7 @@ public:
 
   std::optional<int16_t> read_speed(uint8_t servo_id) {
     uint8_t parameters[] = {to_byte(Register::present_speed_l), 2};  // Read current speed (2 bytes)
-    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
       return std::nullopt;
     }
 
@@ -471,7 +470,7 @@ public:
 
   std::optional<int16_t> read_load(uint8_t servo_id) {
     uint8_t parameters[] = {to_byte(Register::present_load_l), 2};  // Read current load/torque (2 bytes)
-    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
       return std::nullopt;
     }
 
@@ -488,7 +487,7 @@ public:
   }
 
   std::optional<uint8_t> ping(uint8_t servo_id) {
-    if(!send_command(servo_id, to_byte(Instruction::ping))) {  // Use ping instruction
+    if(!send_command(servo_id, Instruction::ping)) {  // Use ping instruction
       return std::nullopt;
     }
 
@@ -515,7 +514,7 @@ public:
     pack_uint16(&parameters[3], time_ms);
     pack_uint16(&parameters[5], speed);
 
-    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 7)) {
+    if(!send_command(servo_id, Instruction::write, parameters, 7)) {
       return false;
     }
 
@@ -550,7 +549,7 @@ public:
     pack_uint16(&parameters[4], 0);      // time_ms = 0 when using ACC
     pack_uint16(&parameters[6], speed);
 
-    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 8)) {
+    if(!send_command(servo_id, Instruction::write, parameters, 8)) {
       return false;
     }
 
@@ -568,7 +567,7 @@ public:
   // Read a single byte from a register
   std::optional<uint8_t> read_byte(uint8_t servo_id, Register reg) {
     uint8_t parameters[] = {to_byte(reg), 1};  // Read 1 byte
-    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
       return std::nullopt;
     }
 
@@ -597,7 +596,7 @@ public:
     parameters[0] = to_byte(reg);
     parameters[1] = value;
 
-    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::write, parameters, 2)) {
       return false;
     }
 
@@ -618,7 +617,7 @@ public:
     parameters[0] = to_byte(Register::id);
     parameters[1] = new_id;
 
-    if(!send_command(current_id, to_byte(Instruction::write), parameters, 2)) {
+    if(!send_command(current_id, Instruction::write, parameters, 2)) {
       return false;
     }
 
@@ -649,7 +648,7 @@ public:
     
     // Read version (registers 3-4, 2 bytes)
     uint8_t ver_params[] = {to_byte(Register::version_l), 2};
-    ok = send_command(servo_id, to_byte(Instruction::read), ver_params, 2);
+    ok = send_command(servo_id, Instruction::read, ver_params, 2);
     if(!ok) return std::nullopt; 
     
     uint8_t ver_response[8];
@@ -659,7 +658,7 @@ public:
     
     // Read min angle limit (registers 9-10, 2 bytes)
     uint8_t min_params[] = {to_byte(Register::min_angle_limit_l), 2};
-    ok = send_command(servo_id, to_byte(Instruction::read), min_params, 2);
+    ok = send_command(servo_id, Instruction::read, min_params, 2);
     if (!ok) return std::nullopt;
 
     uint8_t min_response[8];
@@ -669,7 +668,7 @@ public:
     
     // Read max angle limit (registers 11-12, 2 bytes)
     uint8_t max_params[] = {to_byte(Register::max_angle_limit_l), 2};
-    ok = send_command(servo_id, to_byte(Instruction::read), max_params, 2);
+    ok = send_command(servo_id, Instruction::read, max_params, 2);
     if (!ok) return std::nullopt;
 
     uint8_t max_response[8];
@@ -695,7 +694,7 @@ public:
     torque_params[0] = to_byte(Register::torque_enable);
     torque_params[1] = 1;  // Enable
 
-    if(!send_command(servo_id, to_byte(Instruction::write), torque_params, 2)) {
+    if(!send_command(servo_id, Instruction::write, torque_params, 2)) {
       return false;
     }
 
@@ -710,7 +709,7 @@ public:
     mode_params[0] = to_byte(Register::mode);
     mode_params[1] = 1;  // 1 = wheel mode
 
-    if(!send_command(servo_id, to_byte(Instruction::write), mode_params, 2)) {
+    if(!send_command(servo_id, Instruction::write, mode_params, 2)) {
       return false;
     }
 
@@ -732,7 +731,7 @@ public:
       mode_params[0] = to_byte(Register::mode);
       mode_params[1] = 0;  // 0 = position mode
 
-      if(!send_command(servo_id, to_byte(Instruction::write), mode_params, 2)) {
+      if(!send_command(servo_id, Instruction::write, mode_params, 2)) {
         return false;
       }
 
@@ -754,7 +753,7 @@ public:
       // Pack max angle using big-endian for SC servos
       pack_uint16_be(&params[3], max_angle);
 
-      if(!send_command(servo_id, to_byte(Instruction::write), params, 5)) {
+      if(!send_command(servo_id, Instruction::write, params, 5)) {
         return false;
       }
 
@@ -789,7 +788,7 @@ public:
     parameters[0] = to_byte(Register::goal_speed_l);
     pack_uint16(&parameters[1], speed_value);
 
-    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 3)) {
+    if(!send_command(servo_id, Instruction::write, parameters, 3)) {
       return false;
     }
 
@@ -816,7 +815,7 @@ public:
     parameters[0] = to_byte(Register::ofs_l);
     pack_uint16(&parameters[1], static_cast<uint16_t>(offset));
 
-    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 3)) {
+    if(!send_command(servo_id, Instruction::write, parameters, 3)) {
       return false;
     }
 
@@ -842,7 +841,7 @@ public:
     parameters[0] = to_byte(Register::ofs_l);
     parameters[1] = 2;  // Read 2 bytes
 
-    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
       return 0;
     }
 
@@ -875,7 +874,7 @@ public:
     parameters[0] = to_byte(Register::torque_limit_l);
     pack_uint16(&parameters[1], limit);
 
-    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 3)) {
+    if(!send_command(servo_id, Instruction::write, parameters, 3)) {
       return false;
     }
 
@@ -901,7 +900,7 @@ public:
     parameters[0] = to_byte(Register::torque_limit_l);
     parameters[1] = 2;  // Read 2 bytes
 
-    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
       return 0;
     }
 
@@ -921,7 +920,7 @@ public:
     parameters[0] = to_byte(Register::torque_enable);
     parameters[1] = 1;  // Enable
 
-    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::write, parameters, 2)) {
       return false;
     }
 
@@ -941,7 +940,7 @@ public:
     parameters[0] = to_byte(Register::torque_enable);
     parameters[1] = 0;  // Disable
 
-    if(!send_command(servo_id, to_byte(Instruction::write), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::write, parameters, 2)) {
       return false;
     }
 
@@ -961,7 +960,7 @@ public:
     parameters[0] = to_byte(Register::torque_enable);
     parameters[1] = 1;  // Read 1 byte
 
-    if(!send_command(servo_id, to_byte(Instruction::read), parameters, 2)) {
+    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
       return std::nullopt;
     }
 

@@ -894,7 +894,7 @@ void emergency_servo_reset() {
   uint8_t mode_params[2];
   mode_params[0] = 33;  // SMS_STS_MODE register
   mode_params[1] = 0;   // Set to normal servo mode (not wheel mode)
-  servo_bus.send_command(252, ServoBusApi::to_byte(ServoBusApi::Instruction::write), mode_params, 2);
+  servo_bus.send_command(252, ServoBusApi::Instruction::write, mode_params, 2);
   delay(100);
   
   // Step 4: Clear buffer again
@@ -913,7 +913,7 @@ void emergency_servo_reset() {
   uint8_t torque_params[2];
   torque_params[0] = ServoBusApi::to_byte(ServoBusApi::Register::torque_enable);
   torque_params[1] = 0;  // Disable
-  servo_bus.send_command(0xFE, ServoBusApi::to_byte(ServoBusApi::Instruction::write), torque_params, 2);
+  servo_bus.send_command(0xFE, ServoBusApi::Instruction::write, torque_params, 2);
   delay(100);
   
   // Step 6: Try to set torque limit to 0 (ID 252)
@@ -922,7 +922,7 @@ void emergency_servo_reset() {
   torque_limit_params[0] = 48;  // SMS_STS_TORQUE_LIMIT_L
   torque_limit_params[1] = 0;   // LOW byte
   torque_limit_params[2] = 0;   // HIGH byte
-  servo_bus.send_command(252, ServoBusApi::to_byte(ServoBusApi::Instruction::write), torque_limit_params, 3);
+  servo_bus.send_command(252, ServoBusApi::Instruction::write, torque_limit_params, 3);
   delay(100);
   
   // Step 7: Try specific servo IDs (1-4)
@@ -931,13 +931,13 @@ void emergency_servo_reset() {
     // Set mode to 0 (servo mode)
     mode_params[0] = 33;  // MODE
     mode_params[1] = 0;   // Normal mode
-    servo_bus.send_command(id, ServoBusApi::to_byte(ServoBusApi::Instruction::write), mode_params, 2);
+    servo_bus.send_command(id, ServoBusApi::Instruction::write, mode_params, 2);
     delay(30);
     
     // Disable torque
     torque_params[0] = 40;  // TORQUE_ENABLE
     torque_params[1] = 0;   // Disable
-    servo_bus.send_command(id, ServoBusApi::to_byte(ServoBusApi::Instruction::write), torque_params, 2);
+    servo_bus.send_command(id, ServoBusApi::Instruction::write, torque_params, 2);
     delay(30);
   }
   
@@ -1049,7 +1049,7 @@ void restore_sts_eprom() {
   unlock_params[0] = ServoBusApi::to_byte(ServoBusApi::Register::lock_sts);  // Register 55
   unlock_params[1] = 0;  // Unlock
   
-  if (servo_bus.send_command(5, ServoBusApi::to_byte(ServoBusApi::Instruction::write), unlock_params, 2)) {
+  if (servo_bus.send_command(5, ServoBusApi::Instruction::write, unlock_params, 2)) {
     uint8_t unlock_response[6];
     if (servo_bus.read_response(unlock_response, 6)) {
       Serial.println("✓ EPROM unlocked");
@@ -1073,7 +1073,7 @@ void restore_sts_eprom() {
   limits_params[3] = 0xFF;  // max LOW byte = 255
   limits_params[4] = 0x0F;  // max HIGH byte = 15 (0x0FFF = 4095)
   
-  if (servo_bus.send_command(5, ServoBusApi::to_byte(ServoBusApi::Instruction::write), limits_params, 5)) {
+  if (servo_bus.send_command(5, ServoBusApi::Instruction::write, limits_params, 5)) {
     uint8_t limits_response[6];
     if (servo_bus.read_response(limits_response, 6)) {
       Serial.println("✓ Angle limits written");
@@ -1094,7 +1094,7 @@ void restore_sts_eprom() {
   lock_params[0] = ServoBusApi::to_byte(ServoBusApi::Register::lock_sts);  // Register 55
   lock_params[1] = 1;  // Lock
   
-  if (servo_bus.send_command(5, ServoBusApi::to_byte(ServoBusApi::Instruction::write), lock_params, 2)) {
+  if (servo_bus.send_command(5, ServoBusApi::Instruction::write, lock_params, 2)) {
     uint8_t lock_response[6];
     if (servo_bus.read_response(lock_response, 6)) {
       Serial.println("✓ EPROM locked");
@@ -1153,7 +1153,7 @@ void diagnose_eprom_registers() {
   // Read min angle limit (registers 9-10, 2 bytes)
   Serial.println("\nReading MIN_ANGLE_LIMIT (registers 9-10, 2 bytes)...");
   uint8_t sc_min_params[] = {9, 2};
-  if (servo_bus.send_command(4, ServoBusApi::to_byte(ServoBusApi::Instruction::read), sc_min_params, 2)) {
+  if (servo_bus.send_command(4, ServoBusApi::Instruction::read, sc_min_params, 2)) {
     uint8_t sc_min_response[8];
     if (servo_bus.read_response(sc_min_response, 8)) {
       print_response("  Raw response", sc_min_response, 8);
@@ -1171,7 +1171,7 @@ void diagnose_eprom_registers() {
   // Read max angle limit (registers 11-12, 2 bytes)
   Serial.println("\nReading MAX_ANGLE_LIMIT (registers 11-12, 2 bytes)...");
   uint8_t sc_max_params[] = {11, 2};
-  if (servo_bus.send_command(4, ServoBusApi::to_byte(ServoBusApi::Instruction::read), sc_max_params, 2)) {
+  if (servo_bus.send_command(4, ServoBusApi::Instruction::read, sc_max_params, 2)) {
     uint8_t sc_max_response[8];
     if (servo_bus.read_response(sc_max_response, 8)) {
       print_response("  Raw response", sc_max_response, 8);
@@ -1205,7 +1205,7 @@ void diagnose_eprom_registers() {
   // Read MODE register (register 33, 1 byte)
   Serial.println("\nReading MODE register (register 33, 1 byte)...");
   uint8_t sts_mode_params[] = {33, 1};
-  if (servo_bus.send_command(5, ServoBusApi::to_byte(ServoBusApi::Instruction::read), sts_mode_params, 2)) {
+  if (servo_bus.send_command(5, ServoBusApi::Instruction::read, sts_mode_params, 2)) {
     uint8_t sts_mode_response[7];
     if (servo_bus.read_response(sts_mode_response, 7)) {
       print_response("  Raw response", sts_mode_response, 7);
@@ -1227,7 +1227,7 @@ void diagnose_eprom_registers() {
   // Read min angle limit (registers 9-10, 2 bytes)
   Serial.println("\nReading MIN_ANGLE_LIMIT (registers 9-10, 2 bytes)...");
   uint8_t sts_min_params[] = {9, 2};
-  if (servo_bus.send_command(5, ServoBusApi::to_byte(ServoBusApi::Instruction::read), sts_min_params, 2)) {
+  if (servo_bus.send_command(5, ServoBusApi::Instruction::read, sts_min_params, 2)) {
     uint8_t sts_min_response[8];
     if (servo_bus.read_response(sts_min_response, 8)) {
       print_response("  Raw response", sts_min_response, 8);
@@ -1245,7 +1245,7 @@ void diagnose_eprom_registers() {
   // Read max angle limit (registers 11-12, 2 bytes)
   Serial.println("\nReading MAX_ANGLE_LIMIT (registers 11-12, 2 bytes)...");
   uint8_t sts_max_params[] = {11, 2};
-  if (servo_bus.send_command(5, ServoBusApi::to_byte(ServoBusApi::Instruction::read), sts_max_params, 2)) {
+  if (servo_bus.send_command(5, ServoBusApi::Instruction::read, sts_max_params, 2)) {
     uint8_t sts_max_response[8];
     if (servo_bus.read_response(sts_max_response, 8)) {
       print_response("  Raw response", sts_max_response, 8);

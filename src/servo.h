@@ -97,7 +97,7 @@ public:
       mode_params[0] = ServoBusApi::to_byte(ServoBusApi::Register::mode);
       mode_params[1] = 2;  // Mode 2 = PWM open-loop speed regulation
 
-      if(!bus_->send_command(id_, ServoBusApi::to_byte(ServoBusApi::Instruction::write), mode_params, 2)) {
+      if(!bus_->send_command(id_, ServoBusApi::Instruction::write, mode_params, 2)) {
         return false;
       }
 
@@ -114,7 +114,7 @@ public:
       params[3] = 0;  // max_angle_l
       params[4] = 0;  // max_angle_h
 
-      if(!bus_->send_command(id_, ServoBusApi::to_byte(ServoBusApi::Instruction::write), params, 5)) {
+      if(!bus_->send_command(id_, ServoBusApi::Instruction::write, params, 5)) {
         return false;
       }
 
@@ -156,7 +156,7 @@ public:
     parameters[1] = temp[0];
     parameters[2] = temp[1];
 
-    if(!bus_->send_command(id_, ServoBusApi::to_byte(ServoBusApi::Instruction::write), parameters, 3)) {
+    if(!bus_->send_command(id_, ServoBusApi::Instruction::write, parameters, 3)) {
       return false;
     }
 
