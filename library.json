@@ -1,0 +1,38 @@
+{
+  "name": "NerdBusServo",
+  "version": "1.0.0",
+  "description": "Direct control of Feetech/Waveshare SC and STS series bus servos from ESP32 without driver boards. Supports half-duplex serial communication with custom echo handling.",
+  "keywords": ["servo", "feetech", "waveshare", "sc servo", "sts servo", "bus servo", "esp32", "serial servo", "half-duplex"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/nerd-bus-servo.git"
+  },
+  "authors": [
+    {
+      "name": "Brian Erickson",
+      "email": "berickson+nerd-bus-servo@gmail.com"
+    }
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/berickson/nerd-bus-servo",
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "headers": [
+    "servo_bus_api.h",
+    "servo.h",
+    "sc_servo.h",
+    "sts_servo.h"
+  ],
+  "export": {
+    "exclude": [
+      "src",
+      "test",
+      ".pio",
+      ".vscode"
+    ]
+  },
+  "build": {
+    "flags": ["-std=gnu++17"],
+    "unflags": ["-std=gnu++11"]
+  }
+}
