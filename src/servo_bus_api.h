@@ -107,7 +107,7 @@ public:
   private:
   ServoError last_error_ = ServoError::none;
   HardwareSerial* bus_serial_ = nullptr;
-  uint32_t timeout_ms_ = 10;
+  uint32_t timeout_ms_ = 2;
   static const uint32_t max_servo_count = 10; // maximum servo count supported at once
   ServoType servo_type_ = ServoType::STS;  // Default to STS
   
@@ -419,39 +419,61 @@ public:
     return true;
   }
 
+  // reads byte_count bytes from servo register table, starting at address given by register_id
+  // returns a pointer to byte_count bytes that is only valid until the next api function call
+  uint8_t * read_register(uint8_t servo_id, Register register_id, uint8_t byte_count) {
+    static uint8_t buffer[255];
+    uint8_t parameters[] = {to_byte(register_id), byte_count};  // Read current position (2 bytes)
+    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
+      return nullptr;
+    }
+
+    if(!read_response(buffer, 6+byte_count)) {
+      return nullptr;
+    }
+
+    return &buffer[5];
+  }
+
+  std::optional<uint8_t> read_voltage(uint8_t servo_id) {
+    auto temperature = read_register(servo_id, Register::present_voltage, 1);
+    if (temperature) {
+      return *temperature;
+    }
+    return std::nullopt;
+
+  }
+
+  std::optional<uint8_t> read_temperature(uint8_t servo_id) {
+    auto temperature = read_register(servo_id, Register::present_temperature, 1);
+    if (temperature) {
+      return *temperature;
+    }
+    return std::nullopt;
+
+  }
 
 
 
   std::optional<int> read_position(uint8_t servo_id) {
-    uint8_t parameters[] = {to_byte(Register::present_position_l), 2};  // Read current position (2 bytes)
-    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
+    auto bytes = read_register(servo_id, Register::present_position_l, 2);
+    if (!bytes) {
       return std::nullopt;
     }
-
-    uint8_t response[8];
-    if(!read_response(response, 8)) {
-      return std::nullopt;
-    }
-
     // Extract position using configured byte order
-    int position = unpack_uint16(&response[5]);
+    int position = unpack_uint16(bytes);
     last_error_ = ServoError::none;
     return position;
   }
 
   std::optional<int16_t> read_speed(uint8_t servo_id) {
-    uint8_t parameters[] = {to_byte(Register::present_speed_l), 2};  // Read current speed (2 bytes)
-    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
-      return std::nullopt;
-    }
-
-    uint8_t response[8];
-    if(!read_response(response, 8)) {
+    auto bytes = read_register(servo_id, Register::present_speed_l, 2);
+    if(!bytes) {
       return std::nullopt;
     }
 
     // Extract speed using configured byte order
-    uint16_t raw_speed = unpack_uint16(&response[5]);
+    uint16_t raw_speed = unpack_uint16(bytes);
     
     // Speed format: bit 15 = direction (0=CW/positive, 1=CCW/negative)
     // Lower 15 bits = magnitude
@@ -469,19 +491,14 @@ public:
   }
 
   std::optional<int16_t> read_load(uint8_t servo_id) {
-    uint8_t parameters[] = {to_byte(Register::present_load_l), 2};  // Read current load/torque (2 bytes)
-    if(!send_command(servo_id, Instruction::read, parameters, 2)) {
-      return std::nullopt;
-    }
-
-    uint8_t response[8];
-    if(!read_response(response, 8)) {
+    auto bytes = read_register(servo_id, Register::present_load_l, 2); 
+    if(!bytes) {
       return std::nullopt;
     }
 
     // Extract load using configured byte order
     // Load is signed: positive=CW load, negative=CCW load
-    int16_t load = static_cast<int16_t>(unpack_uint16(&response[5]));
+    int16_t load = static_cast<int16_t>(unpack_uint16(bytes));
     last_error_ = ServoError::none;
     return load;
   }
@@ -631,6 +648,33 @@ public:
     Serial.printf("Changed servo ID from %d to %d\n", current_id, new_id);
     last_error_ = ServoError::none;
     return true;
+  }
+
+  // Read angle limits from servo
+  struct AngleLimits {
+    uint16_t min_angle;
+    uint16_t max_angle;
+  };
+
+  std::optional<AngleLimits> read_angle_limits(uint8_t servo_id) {
+    AngleLimits limits = {0, 0};
+    
+    // Read min angle limit (registers 9-10, 2 bytes)
+    auto min_bytes = read_register(servo_id, Register::min_angle_limit_l, 2);
+    if (!min_bytes) {
+      return std::nullopt;
+    }
+    limits.min_angle = unpack_uint16(min_bytes);
+    
+    // Read max angle limit (registers 11-12, 2 bytes)
+    auto max_bytes = read_register(servo_id, Register::max_angle_limit_l, 2);
+    if (!max_bytes) {
+      return std::nullopt;
+    }
+    limits.max_angle = unpack_uint16(max_bytes);
+    
+    last_error_ = ServoError::none;
+    return limits;
   }
 
   // Read identifying information from servo

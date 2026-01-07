@@ -16,13 +16,21 @@
 
 
 
-
-void scan_ids(uint32_t start_id=1, uint32_t end_id=255) {
-  Serial.printf("scanning for servo ids from %d to %d\n", start_id, end_id);
+std::vector<uint8_t> scan_ids(uint32_t start_id=1, uint32_t end_id=255) {
+  std::vector<uint8_t> found_servo_ids;
   for (uint32_t id = start_id; id<= end_id; ++id) {
     if (servo_bus.ping(id)) {
-      Serial.printf("found servo with id %d\n",id);
+      found_servo_ids.push_back(id);
     }
+  }
+  return found_servo_ids;
+}
+
+void demonstrate_scan_ids(uint32_t start_id=1, uint32_t end_id=255) {
+  Serial.printf("scanning for servo ids from %d to %d\n", start_id, end_id);
+  auto servo_ids = scan_ids(start_id, end_id);
+  for (uint32_t servo_id : servo_ids) {
+    Serial.printf("found servo with id %d\n", servo_id);
   }
   Serial.println("done");
 }
@@ -260,7 +268,7 @@ void demonstrate_coordinated_moving() {
 
 
 void demonstrate_ping() {
-  scan_ids(1, 10);
+  demonstrate_scan_ids(1, 10);
 }
 
 void demonstrate_coordinated_moving_2() {
@@ -992,6 +1000,82 @@ void wait_for_enter(const char* prompt = nullptr) {
   }
 }
 
+void demonstrate_voltage() {
+  SCServo sc_servo(&servo_bus, 4);
+  STSServo sts_servo(&servo_bus, 5);
+
+  Servo* servos[] = {&sc_servo, &sts_servo};
+
+  Serial.printf("reading voltages\n");
+
+  for (Servo * servo : servos ) {
+    auto voltage = servo->read_voltage();
+    if(voltage) {
+      Serial.printf("Servo %d voltage %.1f\n", servo->id(), *voltage);
+    } else {
+      Serial.printf("Failed reading voltage for servo %d", servo->id());
+    }
+  }
+
+  Serial.printf("done\n");
+
+}
+
+
+void demonstrate_infer_servo_type() {
+  auto servo_ids = scan_ids();
+
+  Serial.printf("Inferring servo types for %d servos\n", servo_ids.size());
+
+  for (auto servo_id : servo_ids) {
+    Serial.printf("Servo %d: ", servo_id);
+    
+    auto type = Servo::infer_servo_type(&servo_bus, servo_id);
+    
+    if (!type) {
+      Serial.printf("UNKNOWN - could not determine type\n");
+      continue;
+    }
+    
+    if (*type == ServoBusApi::ServoType::STS) {
+      Serial.printf("STS\n");
+    } else {
+      Serial.printf("SC\n");
+    }
+  }
+  
+  Serial.println("Done inferring servo types");
+}
+
+void demonstrate_temperature() {
+  auto servo_ids = scan_ids();
+
+  Serial.printf("reading temperatures\n");
+
+  for (auto servo_id : servo_ids ) {
+    SCServo servo(&servo_bus, servo_id);
+    auto temperature = servo.read_temperature();
+    if (!temperature) {
+      Serial.printf("Failed reading temperature for servo %d", servo.id());
+    }
+
+    auto voltage = servo.read_voltage();
+    if (!voltage) {
+      Serial.printf("Failed reading voltage for servo %d", servo.id());
+    }
+    if(temperature) {
+      Serial.printf("Servo %d temperature %f voltage: %f\n", servo.id(), *temperature, *voltage);
+    } else {
+    }
+  }
+
+  Serial.printf("done\n");
+
+}
+
+
+
+
 // Helper function to ask yes/no question
 bool ask_yes_no(const char* question) {
   Serial.println(question);
@@ -1697,37 +1781,16 @@ void setup() {
   // === ID CONFIGURATION TOOLS ===
   // Uncomment these to diagnose and fix servo ID issues
 
-  // 1. Diagnose a servo to check EEPROM lock status
-  //    (Checks if EEPROM is locked, which prevents ID changes from persisting)
-  // diagnose_servo(1, SCServoBus::ServoType::STS);  // Check STS servo at ID 1
 
-  // 2. Set servo ID permanently (unlocks EEPROM, writes ID, re-locks)
-  //    Use this to change servo IDs - changes will persist after power cycle
-  // set_servo_id_permanent(1, 5, SCServoBus::ServoType::STS);  // Change STS servo from ID 1 to 5
-  // set_servo_id_permanent(1, 2, SCServoBus::ServoType::SC);   // Change SC servo from ID 1 to 2
+  demonstrate_scan_ids();
+  demonstrate_voltage();
+  demonstrate_temperature();
+  demonstrate_infer_servo_type();
 
-  // === SERVO ID SCHEME ===
-  // SC servos: IDs 2, 3, 4 (big-endian)
-  // STS servo: ID 5 (little-endian)
-  // ID 1 = unconfigured/bad servo indicator
 
-  // === DEMONSTRATIONS ===
-
-  // Scan for all servos on the bus (1-255)
-  scan_ids();
-
-  // === ID CONFIGURATION EXAMPLES ===
-  // Uncomment these lines to set up your servos with the new ID scheme:
-
-  // 1. Diagnose a servo first to check its lock status
-  // diagnose_servo(1, SCServoBus::ServoType::STS);  // For STS servo at ID 1
-  // diagnose_servo(1, SCServoBus::ServoType::SC);   // For SC servo at ID 1
-
-  // 2. Set permanent IDs (changes persist after power cycle)
-  // set_servo_id_permanent(1, 5, SCServoBus::ServoType::STS);  // STS servo: 1 -> 5
-  // set_servo_id_permanent(1, 2, SCServoBus::ServoType::SC);   // SC servo: 1 -> 2
-  // set_servo_id_permanent(1, 3, SCServoBus::ServoType::SC);   // SC servo: 1 -> 3
-  // set_servo_id_permanent(1, 4, SCServoBus::ServoType::SC);   // SC servo: 1 -> 4
+  // servo_bus.set_servo_type(ServoBusApi::ServoType::SC);
+  // servo_bus.set_servo_id_permanent(1, 6);
+  // scan_ids(); 
 
   // 3. After setting IDs, power cycle each servo and scan again to verify
 
@@ -1736,7 +1799,7 @@ void setup() {
   // === ACTIVE TEST ===
   // diagnose_eprom_registers();           // Check what's actually in the servo EPROM
   // restore_sts_eprom();                  // Fix the corrupted STS servo EPROM
-  test_speed_and_load_monitoring();     // Comprehensive speed & load test
+  // test_speed_and_load_monitoring();     // Comprehensive speed & load test
 
   // Other demos available (currently not running):
   // emergency_servo_reset();              // Emergency recovery for stuck servos

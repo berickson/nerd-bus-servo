@@ -21,6 +21,36 @@ public:
   uint16_t encoder_angle_range() const { return max_encoder_angle_ - min_encoder_angle_; }
   bool info_loaded() const { return info_loaded_; }
   
+  // Infer servo type by reading angle limits
+  // STS servos: max angle typically 4095 (12-bit range: 0-4095)
+  // SC servos: max angle typically 1023 (10-bit range: 0-1023)
+  static std::optional<ServoBusApi::ServoType> infer_servo_type(ServoBusApi* bus, uint8_t id) {
+    // Try STS first (little-endian, 12-bit range)
+    bus->set_servo_type(ServoBusApi::ServoType::STS);
+    auto sts_limits = bus->read_angle_limits(id);
+    
+    if (sts_limits && sts_limits->max_angle >= 1024 && sts_limits->max_angle <= 4095) {
+      // Verify with a second read to avoid false positive from noise
+      auto verify = bus->read_angle_limits(id);
+      if (verify && verify->max_angle >= 1024 && verify->max_angle <= 4095) {
+        return ServoBusApi::ServoType::STS;
+      }
+    }
+    
+    // Try SC (big-endian, 10-bit range)
+    bus->set_servo_type(ServoBusApi::ServoType::SC);
+    auto sc_limits = bus->read_angle_limits(id);
+    
+    if (sc_limits && sc_limits->max_angle >= 0 && sc_limits->max_angle <= 1023) {
+      auto verify = bus->read_angle_limits(id);
+      if (verify && verify->max_angle >= 0 && verify->max_angle <= 1023) {
+        return ServoBusApi::ServoType::SC;
+      }
+    }
+    
+    return std::nullopt;  // Could not determine type
+  }
+  
   virtual ServoBusApi::ServoType type() const = 0;
   
   std::optional<ServoBusApi::ServoInfo> read_info() {
@@ -48,6 +78,28 @@ public:
     bus_->set_servo_type(type());
     return bus_->read_load(id_);
   }
+
+  std::optional<float> read_voltage() {
+    bus_->set_servo_type(type());
+    auto voltage = bus_->read_voltage(id_);
+    if (voltage) {
+      return float(*voltage) / 10.0;
+    } else {
+      return std::nullopt;
+    }
+  }
+
+    std::optional<float> read_temperature() {
+    bus_->set_servo_type(type());
+    auto temperature = bus_->read_temperature(id_);
+    if (temperature) {
+      return float(*temperature);
+    } else {
+      return std::nullopt;
+    }
+  }
+
+
 
   bool enable_torque() {
     bus_->set_servo_type(type());
