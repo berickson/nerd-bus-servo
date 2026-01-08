@@ -1768,11 +1768,259 @@ void test_speed_and_load_monitoring() {
   Serial.println("You can now paste all test results back for analysis!");
 }
 
+void demonstrate_sync_write() {
+  // Servo IDs to test
+  std::vector<uint8_t> servo_ids = {4, 6};
+  
+  Serial.println("\n╔══════════════════════════════════════════════════════════════╗");
+  Serial.println("║       Synchronized Position Writing Demo                    ║");
+  Serial.print("║  Using sync_write_positions() with servo(s): ");
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    Serial.printf("#%d", servo_ids[i]);
+    if (i < servo_ids.size() - 1) Serial.print(", ");
+  }
+  Serial.println("          ║");
+  Serial.println("╚══════════════════════════════════════════════════════════════╝\n");
+
+  // Assuming all servos are SC type
+  servo_bus.set_servo_type(ServoBusApi::ServoType::SC);
+
+  // Read servo info
+  Serial.println("Reading servo configurations...");
+  std::vector<ServoBusApi::ServoInfo> servo_infos;
+  
+  for (uint8_t id : servo_ids) {
+    auto info = servo_bus.read_info(id);
+    if (!info) {
+      Serial.printf("ERROR: Failed to read servo #%d info!\n", id);
+      Serial.println("Make sure all servos are connected.");
+      return;
+    }
+    servo_infos.push_back(*info);
+    Serial.printf("✓ Servo #%d: min=%d, max=%d\n", id, info->min_angle, info->max_angle);
+  }
+
+  // Enable torque
+  Serial.println("\nEnabling torque...");
+  for (uint8_t id : servo_ids) {
+    servo_bus.enable_torque(id);
+  }
+
+  // Prepare vectors for sync write
+  std::vector<uint16_t> positions(servo_ids.size());
+  std::vector<uint16_t> times(servo_ids.size());
+  std::vector<uint16_t> speeds(servo_ids.size());
+
+  // Demo 1: Move all to center simultaneously
+  Serial.println("\n=== Demo 1: All servos to center (sync) ===");
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    positions[i] = (servo_infos[i].min_angle + servo_infos[i].max_angle) / 2;
+    times[i] = 2000;
+    speeds[i] = 500;
+  }
+
+  Serial.print("Moving ");
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    Serial.printf("servo #%d to %d", servo_ids[i], positions[i]);
+    if (i < servo_ids.size() - 1) Serial.print(", ");
+  }
+  Serial.println(" (2 sec)...");
+  servo_bus.sync_write_positions(servo_ids, positions, times, speeds);
+  delay(2500);
+
+  // Demo 2: Mirror movement - servos move to opposite positions
+  Serial.println("\n=== Demo 2: Mirror movement ===");
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    positions[i] = (i % 2 == 0) ? servo_infos[i].min_angle : servo_infos[i].max_angle;
+    times[i] = 3000;
+    speeds[i] = 400;
+  }
+
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    Serial.printf("Servo #%d → %d (%s)", servo_ids[i], positions[i], 
+                  (i % 2 == 0) ? "min" : "max");
+    if (i < servo_ids.size() - 1) Serial.print(", ");
+  }
+  Serial.println();
+  servo_bus.sync_write_positions(servo_ids, positions, times, speeds);
+  delay(3500);
+
+  // Demo 3: Reverse mirror
+  Serial.println("\n=== Demo 3: Reverse mirror ===");
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    positions[i] = (i % 2 == 0) ? servo_infos[i].max_angle : servo_infos[i].min_angle;
+    times[i] = 3000;
+    speeds[i] = 400;
+  }
+
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    Serial.printf("Servo #%d → %d (%s)", servo_ids[i], positions[i],
+                  (i % 2 == 0) ? "max" : "min");
+    if (i < servo_ids.size() - 1) Serial.print(", ");
+  }
+  Serial.println();
+  servo_bus.sync_write_positions(servo_ids, positions, times, speeds);
+  delay(3500);
+
+  // Demo 4: Return to center
+  Serial.println("\n=== Demo 4: All back to center ===");
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    positions[i] = (servo_infos[i].min_angle + servo_infos[i].max_angle) / 2;
+    times[i] = 2000;
+    speeds[i] = 500;
+  }
+
+  servo_bus.sync_write_positions(servo_ids, positions, times, speeds);
+  delay(2500);
+
+  // Disable torque
+  Serial.println("\nDisabling torque...");
+  for (uint8_t id : servo_ids) {
+    servo_bus.disable_torque(id);
+  }
+
+  Serial.println("\n✓ Synchronized Position Writing Demo Complete!");
+  Serial.println("\nKey advantages of sync_write_positions():");
+  Serial.println("  • Single bus transmission for all servos");
+  Serial.println("  • Perfect timing synchronization");
+  Serial.println("  • Reduced latency compared to sequential writes");
+}
+
+void demonstrate_sync_read() {
+  // Servo IDs to test
+  std::vector<uint8_t> servo_ids = {5};
+  
+  Serial.println("\n╔══════════════════════════════════════════════════════════════╗");
+  Serial.println("║       Synchronized Position Reading Demo                    ║");
+  Serial.print("║  Using sync_read_positions() with servo(s): ");
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    Serial.printf("#%d", servo_ids[i]);
+    if (i < servo_ids.size() - 1) Serial.print(", ");
+  }
+  Serial.println("             ║");
+  Serial.println("╚══════════════════════════════════════════════════════════════╝\n");
+
+  Serial.println("STS servos support SYNC_READ (0x82) for efficient bulk reads.\n");
+
+  // Set servo type
+  servo_bus.set_servo_type(ServoBusApi::ServoType::STS);
+
+  // Read servo info and prepare positions
+  Serial.println("Reading servo configuration...");
+  std::vector<uint16_t> positions;
+  std::vector<uint16_t> times;
+  std::vector<uint16_t> speeds;
+  
+  for (uint8_t id : servo_ids) {
+    auto info = servo_bus.read_info(id);
+    if (!info) {
+      Serial.printf("ERROR: Failed to read servo #%d info!\n", id);
+      return;
+    }
+    Serial.printf("✓ Servo #%d: min=%d, max=%d\n", id, info->min_angle, info->max_angle);
+    
+    uint16_t center_pos = (info->min_angle + info->max_angle) / 2;
+    positions.push_back(center_pos);
+    times.push_back(1000);
+    speeds.push_back(500);
+  }
+
+  // Enable torque and move to center positions
+  Serial.println("\nEnabling torque and moving to center positions...");
+  for (uint8_t id : servo_ids) {
+    servo_bus.enable_torque(id);
+  }
+
+  servo_bus.sync_write_positions(servo_ids, positions, times, speeds);
+  delay(1500);
+
+  Serial.println("Servos moved to center positions");
+
+  // Compare individual read vs sync_read
+  Serial.println("\n=== Comparison: Individual Read vs Sync Read ===\n");
+  
+  // Method 1: Individual reads
+  Serial.println("Method 1: Individual read_position()");
+  std::vector<std::optional<int>> individual_positions;
+  for (uint8_t id : servo_ids) {
+    auto pos = servo_bus.read_position(id);
+    individual_positions.push_back(pos);
+    if (pos) {
+      Serial.printf("  Servo #%d: %d\n", id, *pos);
+    } else {
+      Serial.printf("  Servo #%d: FAILED\n", id);
+    }
+  }
+  
+  // Method 2: Sync read
+  Serial.println("\nMethod 2: sync_read_positions()");
+  auto sync_results = servo_bus.sync_read_positions(servo_ids);
+  
+  for (size_t i = 0; i < servo_ids.size(); i++) {
+    if (i < sync_results.size() && sync_results[i]) {
+      Serial.printf("  Servo #%d: %d\n", servo_ids[i], *sync_results[i]);
+      
+      // Compare with individual read
+      if (i < individual_positions.size() && individual_positions[i] && sync_results[i]) {
+        int diff = abs(*individual_positions[i] - *sync_results[i]);
+        if (diff <= 2) {
+          Serial.printf("    ✓ Matches individual read (diff: %d)\n", diff);
+        } else {
+          Serial.printf("    ⚠ Mismatch with individual read (diff: %d)\n", diff);
+        }
+      }
+    } else {
+      Serial.printf("  Servo #%d: FAILED\n", servo_ids[i]);
+    }
+  }
+  
+  Serial.println("\n=== Testing Multiple Reads ===");
+  Serial.println("Reading positions 5 times with sync_read...\n");
+  
+  for (int i = 0; i < 5; i++) {
+    auto results = servo_bus.sync_read_positions(servo_ids);
+    Serial.printf("Read %d: ", i + 1);
+    for (size_t j = 0; j < servo_ids.size(); j++) {
+      if (j < results.size() && results[j]) {
+        Serial.printf("#%d=%d", servo_ids[j], *results[j]);
+      } else {
+        Serial.printf("#%d=FAIL", servo_ids[j]);
+      }
+      if (j < servo_ids.size() - 1) Serial.print(", ");
+    }
+    Serial.println();
+    delay(100);
+  }
+
+  // Disable torque
+  Serial.println("\nDisabling torque...");
+  for (uint8_t id : servo_ids) {
+    servo_bus.disable_torque(id);
+  }
+  
+  Serial.println("\n✓ Sync Read Demo Complete!");
+  Serial.println("\nKey advantages of sync_read_positions():");
+  Serial.println("  • Single bus transaction reads multiple servos");
+  Serial.println("  • Reduced latency compared to sequential reads");
+  Serial.println("  • Synchronized snapshot of all servo positions");
+  Serial.println("  • Works on STS servos (SC servos typically don't support it)");
+}
+
 void setup() {
   Serial.begin(1000000);
   delay(2000);
 
   Serial1.begin(1000000, SERIAL_8N1, pin_servo_rx, pin_servo_tx);
+
+// Configure TX as open-drain (only pulls LOW, floats HIGH)
+//gpio_set_pull_mode((gpio_num_t)pin_servo_tx, GPIO_PULLUP_ONLY);  // Enable pull-up
+// gpio_set_drive_capability((gpio_num_t)pin_servo_tx, GPIO_DRIVE_CAP_2);  // Medium drive (10mA)
+
+// // Make TX pin open-drain
+// PIN_FUNC_SELECT(GPIO_PIN_MUX_REG[pin_servo_tx], PIN_FUNC_GPIO);
+// gpio_set_direction((gpio_num_t)pin_servo_tx, GPIO_MODE_OUTPUT_OD);  // Open-drain mode
+// gpio_matrix_out(pin_servo_tx, U1TXD_OUT_IDX, false, false);  // Reconnect UART TX
+
   servo_bus.set_serial(&Serial1);
 
   // Wait a bit after serial initialization
@@ -1782,10 +2030,10 @@ void setup() {
   // Uncomment these to diagnose and fix servo ID issues
 
 
-  demonstrate_scan_ids();
-  demonstrate_voltage();
-  demonstrate_temperature();
-  demonstrate_infer_servo_type();
+  // demonstrate_scan_ids();
+  // demonstrate_voltage();
+  // demonstrate_temperature();
+  // demonstrate_infer_servo_type();
 
 
   // servo_bus.set_servo_type(ServoBusApi::ServoType::SC);
@@ -1808,6 +2056,8 @@ void setup() {
   // demonstrate_coordinated_moving_2();   // Clean version using servo objects
   // demonstrate_sts_features();           // Full STS features demo
   // demonstrate_wheel_mode();             // STS-only wheel mode demo
+  demonstrate_sync_write();             // Sync write demo with servos 4 & 6
+  // demonstrate_sync_read();              // Sync read experiment with servos 4 & 6
 }
 
 void loop() {}

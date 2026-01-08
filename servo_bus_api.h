@@ -1,4 +1,5 @@
 #pragma once
+#include <map>
 // this class exposes APIs for low level SC and STS bus servo protocol
 class ServoBusApi {
 public:
@@ -1096,9 +1097,8 @@ public:
   }
 
   // Sync read positions from multiple servos at once
-  // NOTE: SCSCL servos (SC15, SC09, etc.) do NOT support sync_read instruction
-  // This is only supported by SMS_STS and HLSCL series servos
-  // For SC servos, use individual reads
+  // NOTE: SCSCL servos (SC15, SC09, etc.) may NOT support sync_read instruction
+  // This is confirmed to work on SMS_STS servos
   std::vector<std::optional<int>> sync_read_positions(const std::vector<uint8_t>& servo_ids) {
     std::vector<std::optional<int>> results(servo_ids.size());
     
@@ -1107,12 +1107,102 @@ public:
       return results;
     }
     
-    Serial.printf("Note: SCSCL servos don't support sync_read, using individual reads\n");
-    Serial.printf("Reading positions from %d servos...\n", servo_ids.size());
+    if (servo_type_ == ServoType::SC) {
+      Serial.printf("WARNING: SC servos typically don't support sync_read - attempting anyway\n");
+    }
     
-    // Use individual reads for SC series servos
+    // Build sync_read packet
+    // Packet: FF FF FE LENGTH INST_SYNC_READ START_ADDR DATA_LEN ID1 ID2 ... CHECKSUM
+    uint8_t start_addr = to_byte(Register::present_position_l);
+    uint8_t data_len = 2;  // Reading 2 bytes (position)
+    
+    uint8_t packet[50];
+    int idx = 0;
+    
+    packet[idx++] = to_byte(Protocol::header_byte_1);
+    packet[idx++] = to_byte(Protocol::header_byte_2);
+    packet[idx++] = to_byte(Protocol::broadcast_id);
+    packet[idx++] = 4 + servo_ids.size();  // LENGTH = instruction + start_addr + data_len + servo_ids + checksum
+    packet[idx++] = to_byte(Instruction::sync_read);
+    packet[idx++] = start_addr;
+    packet[idx++] = data_len;
+    
+    // Calculate checksum so far
+    uint8_t checksum = 0xFE + packet[3] + packet[4] + packet[5] + packet[6];
+    
+    // Add servo IDs
     for (size_t i = 0; i < servo_ids.size(); i++) {
-      results[i] = read_position(servo_ids[i]);
+      packet[idx++] = servo_ids[i];
+      checksum += servo_ids[i];
+    }
+    
+    packet[idx++] = ~checksum;
+    uint8_t packet_size = idx;
+    
+    // Send packet
+    bus_serial_->write(packet, packet_size);
+    
+    // Consume echo
+    int echo_count = 0;
+    unsigned long echo_start = millis();
+    while(echo_count < packet_size && millis() - echo_start < timeout_ms_) {
+      if(bus_serial_->available()) {
+        bus_serial_->read();
+        echo_count++;
+      }
+    }
+    
+    // Wait for responses from all servos
+    delay(10);  // Give servos time to respond
+    
+    // Read all available bytes
+    uint8_t response_buffer[200];
+    int bytes_read = 0;
+    unsigned long read_start = millis();
+    
+    while (bytes_read < 200 && millis() - read_start < 50) {
+      if (bus_serial_->available()) {
+        response_buffer[bytes_read++] = bus_serial_->read();
+        read_start = millis();  // Reset timeout on each byte
+      }
+    }
+    
+    if (bytes_read == 0) {
+      Serial.printf("No response from sync_read - servos may not support this command\n");
+      last_error_ = ServoError::timeout;
+      return results;
+    }
+    
+    // Parse responses
+    int pos = 0;
+    std::map<uint8_t, int> position_map;  // Map servo_id -> position
+    
+    while (pos + 6 <= bytes_read) {
+      // Look for packet header FF FF
+      if (response_buffer[pos] == 0xFF && response_buffer[pos + 1] == 0xFF) {
+        uint8_t servo_id = response_buffer[pos + 2];
+        uint8_t length = response_buffer[pos + 3];
+        
+        int packet_size = 4 + length;
+        if (pos + packet_size <= bytes_read) {
+          // Extract position (2 bytes after error byte at position 4)
+          uint16_t position = unpack_uint16(&response_buffer[pos + 5]);
+          position_map[servo_id] = position;
+          pos += packet_size;
+        } else {
+          pos++;
+        }
+      } else {
+        pos++;
+      }
+    }
+    
+    // Fill results array in the order requested
+    for (size_t i = 0; i < servo_ids.size(); i++) {
+      auto it = position_map.find(servo_ids[i]);
+      if (it != position_map.end()) {
+        results[i] = it->second;
+      }
     }
     
     last_error_ = ServoError::none;
