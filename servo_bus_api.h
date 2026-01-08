@@ -151,6 +151,23 @@ public:
     }
   }
 
+  // Helper to consume echo bytes after transmission
+  bool consume_echo(int packet_size) {
+    int echo_count = 0;
+    unsigned long echo_start = millis();
+    while(echo_count < packet_size) {
+      if(bus_serial_->available()) {
+        bus_serial_->read();
+        echo_count++;
+      }
+      if(millis() - echo_start > timeout_ms_) {
+        last_error_ = ServoError::timeout;
+        return false;
+      }
+    }
+    return true;
+  }
+
   // Runtime validation: Check if a register is valid for the current servo type
   static bool is_register_valid_for_type(Register reg, ServoType type) {
     uint8_t addr = to_byte(reg);
@@ -246,17 +263,8 @@ public:
     bus_serial_->write(packet, packet_size);
     
     // Discard echo bytes as they arrive during transmission
-    int echo_count = 0;
-    unsigned long echo_start = millis();
-    while(echo_count < packet_size) {
-      if(bus_serial_->available()) {
-        bus_serial_->read();
-        echo_count++;
-      }
-      if(millis() - echo_start > timeout_ms_) {
-        last_error_ = ServoError::timeout;
-        return false;
-      }
+    if (!consume_echo(packet_size)) {
+      return false;
     }
 
     last_error_ = ServoError::none;
@@ -1079,17 +1087,8 @@ public:
     bus_serial_->write(packet, packet_size);
     
     // Consume echo
-    int echo_count = 0;
-    unsigned long echo_start = millis();
-    while(echo_count < packet_size) {
-      if(bus_serial_->available()) {
-        bus_serial_->read();
-        echo_count++;
-      }
-      if(millis() - echo_start > timeout_ms_) {
-        last_error_ = ServoError::timeout;
-        return false;
-      }
+    if (!consume_echo(packet_size)) {
+      return false;
     }
     
     last_error_ = ServoError::none;
@@ -1111,45 +1110,20 @@ public:
       Serial.printf("WARNING: SC servos typically don't support sync_read - attempting anyway\n");
     }
     
-    // Build sync_read packet
-    // Packet: FF FF FE LENGTH INST_SYNC_READ START_ADDR DATA_LEN ID1 ID2 ... CHECKSUM
-    uint8_t start_addr = to_byte(Register::present_position_l);
-    uint8_t data_len = 2;  // Reading 2 bytes (position)
-    
-    uint8_t packet[50];
-    int idx = 0;
-    
-    packet[idx++] = to_byte(Protocol::header_byte_1);
-    packet[idx++] = to_byte(Protocol::header_byte_2);
-    packet[idx++] = to_byte(Protocol::broadcast_id);
-    packet[idx++] = 4 + servo_ids.size();  // LENGTH = instruction + start_addr + data_len + servo_ids + checksum
-    packet[idx++] = to_byte(Instruction::sync_read);
-    packet[idx++] = start_addr;
-    packet[idx++] = data_len;
-    
-    // Calculate checksum so far
-    uint8_t checksum = 0xFE + packet[3] + packet[4] + packet[5] + packet[6];
+    // Build parameters: START_ADDR DATA_LEN ID1 ID2 ...
+    uint8_t parameters[2 + max_servo_count];
+    parameters[0] = to_byte(Register::present_position_l);  // Start address
+    parameters[1] = 2;  // Data length (2 bytes for position)
     
     // Add servo IDs
     for (size_t i = 0; i < servo_ids.size(); i++) {
-      packet[idx++] = servo_ids[i];
-      checksum += servo_ids[i];
+      parameters[2 + i] = servo_ids[i];
     }
     
-    packet[idx++] = ~checksum;
-    uint8_t packet_size = idx;
-    
-    // Send packet
-    bus_serial_->write(packet, packet_size);
-    
-    // Consume echo
-    int echo_count = 0;
-    unsigned long echo_start = millis();
-    while(echo_count < packet_size && millis() - echo_start < timeout_ms_) {
-      if(bus_serial_->available()) {
-        bus_serial_->read();
-        echo_count++;
-      }
+    // Send sync_read command using existing method
+    if (!send_command(to_byte(Protocol::broadcast_id), Instruction::sync_read, 
+                      parameters, 2 + servo_ids.size())) {
+      return results;
     }
     
     // Wait for responses from all servos
@@ -1177,17 +1151,30 @@ public:
     int pos = 0;
     std::map<uint8_t, int> position_map;  // Map servo_id -> position
     
-    while (pos + 6 <= bytes_read) {
+    while (pos + MIN_PACKET_SIZE <= bytes_read) {
       // Look for packet header FF FF
       if (response_buffer[pos] == 0xFF && response_buffer[pos + 1] == 0xFF) {
         uint8_t servo_id = response_buffer[pos + 2];
         uint8_t length = response_buffer[pos + 3];
+        uint8_t error = response_buffer[pos + 4];
         
         int packet_size = 4 + length;
         if (pos + packet_size <= bytes_read) {
-          // Extract position (2 bytes after error byte at position 4)
-          uint16_t position = unpack_uint16(&response_buffer[pos + 5]);
-          position_map[servo_id] = position;
+          // Validate checksum
+          int param_count = length - 2;  // length includes instruction + params
+          uint8_t expected_checksum = calculate_checksum(
+            servo_id, length, error,
+            param_count > 0 ? &response_buffer[pos + 5] : nullptr,
+            param_count
+          );
+          
+          if (expected_checksum == response_buffer[pos + packet_size - 1]) {
+            // Extract position (2 bytes after error byte at position 4)
+            uint16_t position = unpack_uint16(&response_buffer[pos + 5]);
+            position_map[servo_id] = position;
+          } else {
+            Serial.printf("Checksum mismatch for servo %d\n", servo_id);
+          }
           pos += packet_size;
         } else {
           pos++;
