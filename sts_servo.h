@@ -4,6 +4,13 @@ public:
   using Servo::Servo;
   ServoBusApi::ServoType type() const override { return ServoBusApi::ServoType::STS; }
   
+  // STS motor speed uses wheel velocity (true velocity control)
+  // rather than PWM open-loop mode
+  bool set_motor_speed(int16_t speed) override {
+    bus_->set_servo_type(type());
+    return bus_->set_wheel_velocity(id_, speed);
+  }
+  
   // Velocity-based wheel mode - unique to STS servos!
   // This uses MODE register to enable true continuous rotation with velocity control
   // (Different from PWM mode which is available on all servos)

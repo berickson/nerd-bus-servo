@@ -111,6 +111,7 @@ public:
   uint32_t timeout_ms_ = 2;
   static const uint32_t max_servo_count = 10; // maximum servo count supported at once
   ServoType servo_type_ = ServoType::STS;  // Default to STS
+  bool echo_enabled_ = true;  // Set false for boards with TX/RX isolation (e.g., Waveshare Servo Driver)
   
   // Pack 16-bit value into big-endian byte array (HIGH byte first) - for SC servos
   void pack_uint16_be(uint8_t* buffer, uint16_t value) {
@@ -152,7 +153,9 @@ public:
   }
 
   // Helper to consume echo bytes after transmission
+  // When echo is disabled (boards with TX/RX isolation), this is a no-op
   bool consume_echo(int packet_size) {
+    if (!echo_enabled_) return true;
     int echo_count = 0;
     unsigned long echo_start = millis();
     while(echo_count < packet_size) {
@@ -216,6 +219,11 @@ public:
   void set_servo_type(ServoType type) { 
     servo_type_ = type;
   }
+
+  // Enable/disable echo consumption. Set false for boards with hardware
+  // TX/RX isolation (e.g., Waveshare Servo Driver board) where the ESP32
+  // does not see its own transmitted bytes echoed back on RX.
+  void set_echo_enabled(bool enabled) { echo_enabled_ = enabled; }
   
   // Error state accessors
   inline bool ok() const { return last_error_ == ServoError::none; }
@@ -776,10 +784,23 @@ public:
     return true;
   }
 
-  // Restore position mode from wheel mode
+  // Restore position mode from wheel/motor mode
   bool enable_position_mode(uint8_t servo_id, uint16_t min_angle, uint16_t max_angle) {
     if (servo_type_ == ServoType::STS) {
-      // STS servos: Write 0 to MODE register to restore position mode
+      // STS servos: Restore max angle limit (motor mode sets it to 0)
+      uint8_t angle_params[3];
+      angle_params[0] = to_byte(Register::max_angle_limit_l);
+      pack_uint16_le(&angle_params[1], max_angle);
+      if(!send_command(servo_id, Instruction::write, angle_params, 3)) {
+        return false;
+      }
+      uint8_t angle_resp[MIN_PACKET_SIZE];
+      if(!read_response(angle_resp, MIN_PACKET_SIZE)) {
+        last_error_ = ServoError::no_ack;
+        return false;
+      }
+
+      // Write 0 to MODE register to restore position mode
       uint8_t mode_params[2];
       mode_params[0] = to_byte(Register::mode);
       mode_params[1] = 0;  // 0 = position mode
@@ -1025,6 +1046,68 @@ public:
 
     last_error_ = ServoError::none;
     return response[5] != 0;
+  }
+
+  // Read current draw from servo (both SC and STS)
+  // Returns signed value: positive = CW load current, negative = CCW
+  std::optional<int16_t> read_current(uint8_t servo_id) {
+    auto bytes = read_register(servo_id, Register::present_current_l, 2);
+    if (!bytes) return std::nullopt;
+    int16_t cur = static_cast<int16_t>(unpack_uint16(bytes));
+    // Current uses sign-magnitude: bit 15 = direction
+    if (cur & (1 << 15)) cur = -(cur & ~(1 << 15));
+    last_error_ = ServoError::none;
+    return cur;
+  }
+
+  // Unlock EEPROM for writing (angle limits, mode, ID, etc.)
+  bool unlock_eeprom(uint8_t servo_id) {
+    Register lock_reg = (servo_type_ == ServoType::STS) ? Register::lock_sts : Register::lock_sc;
+    return write_byte(servo_id, lock_reg, 0);
+  }
+
+  // Lock EEPROM after writing
+  bool lock_eeprom(uint8_t servo_id) {
+    Register lock_reg = (servo_type_ == ServoType::STS) ? Register::lock_sts : Register::lock_sc;
+    return write_byte(servo_id, lock_reg, 1);
+  }
+
+  // Enable motor/wheel mode (continuous rotation)
+  // SC servos: sets both angle limits to 0
+  // STS servos: sets MODE register to 3, max angle to 0
+  // Caller must unlock EEPROM before calling and lock after
+  bool enable_motor_mode(uint8_t servo_id) {
+    if (servo_type_ == ServoType::STS) {
+      if (!write_byte(servo_id, Register::mode, 3)) return false;
+      uint8_t params[3];
+      params[0] = to_byte(Register::max_angle_limit_l);
+      pack_uint16(&params[1], 0);
+      if (!send_command(servo_id, Instruction::write, params, 3)) return false;
+      uint8_t resp[MIN_PACKET_SIZE];
+      return read_response(resp, MIN_PACKET_SIZE);
+    } else {
+      // SC: set both angle limits to 0
+      uint8_t params[5];
+      params[0] = to_byte(Register::min_angle_limit_l);
+      pack_uint16_be(&params[1], 0);
+      pack_uint16_be(&params[3], 0);
+      if (!send_command(servo_id, Instruction::write, params, 5)) return false;
+      uint8_t resp[MIN_PACKET_SIZE];
+      return read_response(resp, MIN_PACKET_SIZE);
+    }
+  }
+
+  // Read servo operating mode
+  // STS: reads MODE register directly (0=position, 1=wheel, 2=PWM, 3=step)
+  // SC: infers from angle limits (both 0 → motor mode 3, otherwise 0)
+  std::optional<uint8_t> read_mode(uint8_t servo_id) {
+    if (servo_type_ == ServoType::STS) {
+      return read_byte(servo_id, Register::mode);
+    } else {
+      auto limits = read_angle_limits(servo_id);
+      if (!limits) return std::nullopt;
+      return (limits->min_angle == 0 && limits->max_angle == 0) ? uint8_t(3) : uint8_t(0);
+    }
   }
 
   // Sync write positions to multiple servos at once

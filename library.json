@@ -33,6 +33,8 @@
   },
   "build": {
     "flags": ["-std=gnu++17"],
-    "unflags": ["-std=gnu++11"]
+    "unflags": ["-std=gnu++11"],
+    "includeDir": ".",
+    "srcFilter": ["+<*>", "-<main.cpp>"]
   }
 }

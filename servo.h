@@ -99,6 +99,68 @@ public:
     }
   }
 
+  std::optional<int16_t> read_current() {
+    bus_->set_servo_type(type());
+    return bus_->read_current(id_);
+  }
+
+  // Read operating mode (0=position, 3=motor; SC infers from angle limits)
+  std::optional<uint8_t> read_mode() {
+    bus_->set_servo_type(type());
+    return bus_->read_mode(id_);
+  }
+
+  bool unlock_eeprom() {
+    bus_->set_servo_type(type());
+    return bus_->unlock_eeprom(id_);
+  }
+
+  bool lock_eeprom() {
+    bus_->set_servo_type(type());
+    return bus_->lock_eeprom(id_);
+  }
+
+  // Enable motor (continuous rotation) mode with EEPROM lock/unlock
+  bool enable_motor_mode() {
+    bus_->set_servo_type(type());
+    if (!bus_->unlock_eeprom(id_)) return false;
+    bool ok = bus_->enable_motor_mode(id_);
+    bus_->lock_eeprom(id_);
+    return ok;
+  }
+
+  // Restore position mode with EEPROM lock/unlock
+  // If angle limits haven't been read, uses type-appropriate defaults:
+  //   SC:  min=20, max=1003
+  //   STS: min=0,  max=4095
+  bool restore_position_mode() {
+    bus_->set_servo_type(type());
+    uint16_t min_angle = min_encoder_angle_;
+    uint16_t max_angle = max_encoder_angle_;
+    if (!info_loaded_) {
+      if (type() == ServoBusApi::ServoType::STS) {
+        min_angle = 0;
+        max_angle = 4095;
+      } else {
+        min_angle = 20;
+        max_angle = 1003;
+      }
+    }
+    if (!bus_->unlock_eeprom(id_)) return false;
+    bool ok = bus_->enable_position_mode(id_, min_angle, max_angle);
+    bus_->lock_eeprom(id_);
+    return ok;
+  }
+
+  // Set motor speed in motor/wheel mode
+  // Positive = CW, negative = CCW
+  // SC servos: uses PWM mode speed
+  // STS servos: uses wheel velocity (override in STSServo)
+  virtual bool set_motor_speed(int16_t speed) {
+    bus_->set_servo_type(type());
+    return set_pwm_speed(speed);
+  }
+
 
 
   bool enable_torque() {
