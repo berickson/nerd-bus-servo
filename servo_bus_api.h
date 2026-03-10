@@ -514,8 +514,17 @@ public:
     }
 
     // Extract load using configured byte order
-    // Load is signed: positive=CW load, negative=CCW load
-    int16_t load = static_cast<int16_t>(unpack_uint16(bytes));
+    // Load format: bit 10 = direction (0=CW/positive, 1=CCW/negative)
+    // Bits 0-9 = magnitude (0-1000)
+    uint16_t raw_load = unpack_uint16(bytes);
+    int16_t load;
+    if (raw_load & (1 << 10)) {
+      // Bit 10 set = CCW = negative
+      load = -(raw_load & 0x03FF);  // Mask off direction bit, negate
+    } else {
+      // Bit 10 clear = CW = positive
+      load = raw_load & 0x03FF;     // Mask off direction bit
+    }
     last_error_ = ServoError::none;
     return load;
   }
@@ -1053,9 +1062,15 @@ public:
   std::optional<int16_t> read_current(uint8_t servo_id) {
     auto bytes = read_register(servo_id, Register::present_current_l, 2);
     if (!bytes) return std::nullopt;
-    int16_t cur = static_cast<int16_t>(unpack_uint16(bytes));
-    // Current uses sign-magnitude: bit 15 = direction
-    if (cur & (1 << 15)) cur = -(cur & ~(1 << 15));
+    // Current uses sign-magnitude: bit 15 = direction (0=CW, 1=CCW)
+    // Bits 0-14 = magnitude
+    uint16_t raw_cur = unpack_uint16(bytes);
+    int16_t cur;
+    if (raw_cur & (1 << 15)) {
+      cur = -(raw_cur & 0x7FFF);
+    } else {
+      cur = raw_cur & 0x7FFF;
+    }
     last_error_ = ServoError::none;
     return cur;
   }
