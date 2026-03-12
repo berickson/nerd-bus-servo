@@ -219,6 +219,7 @@ public:
 
   bool move_to_encoder_angle(uint16_t encoder_angle, uint32_t duration_ms) {
     if (!info_loaded_) return false;
+    if (duration_ms == 0) return false;
     bus_->set_servo_type(type());
     
     auto current = read_encoder_angle();
