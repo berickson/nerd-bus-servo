@@ -33,9 +33,18 @@ public:
     auto sts_limits = bus->read_angle_limits(id);
     
     if (sts_limits && sts_limits->max_angle >= 1024 && sts_limits->max_angle <= 4095) {
-      // Verify with a second read to avoid false positive from noise
       auto verify = bus->read_angle_limits(id);
       if (verify && verify->max_angle >= 1024 && verify->max_angle <= 4095) {
+        return ServoBusApi::ServoType::STS;
+      }
+    }
+    
+    // STS servo in motor/wheel mode has max_angle=0, which would falsely
+    // match SC range. Check the MODE register (STS-only, register 33)
+    // to catch this case before falling through to SC detection.
+    if (sts_limits && sts_limits->max_angle == 0) {
+      auto mode = bus->read_mode(id);
+      if (mode.has_value() && mode.value() != 0) {
         return ServoBusApi::ServoType::STS;
       }
     }
