@@ -10,6 +10,7 @@ protected:
   uint16_t min_encoder_angle_ = 0;
   uint16_t max_encoder_angle_ = 4095;
   bool info_loaded_ = false;
+  bool current_supported_ = false;
 
 public:
   Servo(ServoBusApi* bus, uint8_t id) : bus_(bus), id_(id) {}
@@ -20,6 +21,7 @@ public:
   uint16_t max_encoder_angle() const { return max_encoder_angle_; }
   uint16_t encoder_angle_range() const { return max_encoder_angle_ - min_encoder_angle_; }
   bool info_loaded() const { return info_loaded_; }
+  bool current_supported() const { return current_supported_; }
   
   // Infer servo type by reading angle limits
   // STS servos: max angle typically 4095 (12-bit range: 0-4095)
@@ -61,12 +63,20 @@ public:
       max_encoder_angle_ = info->max_angle;
       info_loaded_ = true;
     }
+    // SC servos do not have current sensing hardware — register 69-70
+    // exists but always returns 0.  Only STS servos report real current.
+    current_supported_ = (type() == ServoBusApi::ServoType::STS);
     return info;
   }
   
   std::optional<int> read_encoder_angle() {
     bus_->set_servo_type(type());
     return bus_->read_position(id_);
+  }
+
+  std::optional<int> read_goal_position() {
+    bus_->set_servo_type(type());
+    return bus_->read_goal_position(id_);
   }
 
   std::optional<int16_t> read_speed() {
@@ -100,6 +110,7 @@ public:
   }
 
   std::optional<int16_t> read_current() {
+    if (!current_supported_) return std::nullopt;
     bus_->set_servo_type(type());
     return bus_->read_current(id_);
   }

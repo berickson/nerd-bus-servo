@@ -483,6 +483,16 @@ public:
     return position;
   }
 
+  std::optional<int> read_goal_position(uint8_t servo_id) {
+    auto bytes = read_register(servo_id, Register::goal_position_l, 2);
+    if (!bytes) {
+      return std::nullopt;
+    }
+    int position = unpack_uint16(bytes);
+    last_error_ = ServoError::none;
+    return position;
+  }
+
   std::optional<int16_t> read_speed(uint8_t servo_id) {
     auto bytes = read_register(servo_id, Register::present_speed_l, 2);
     if(!bytes) {
@@ -1057,22 +1067,22 @@ public:
     return response[5] != 0;
   }
 
-  // Read current draw from servo (both SC and STS)
-  // Returns signed value: positive = CW load current, negative = CCW
+  // Read current draw from servo in milliamps (both SC and STS)
+  // Returns signed value in mA: positive = CW, negative = CCW
+  // Raw register unit = 6.5mA per the servo spec
   std::optional<int16_t> read_current(uint8_t servo_id) {
     auto bytes = read_register(servo_id, Register::present_current_l, 2);
     if (!bytes) return std::nullopt;
     // Current uses sign-magnitude: bit 15 = direction (0=CW, 1=CCW)
-    // Bits 0-14 = magnitude
+    // Bits 0-14 = magnitude in raw units (1 unit = 6.5mA)
     uint16_t raw_cur = unpack_uint16(bytes);
-    int16_t cur;
+    int16_t magnitude = raw_cur & 0x7FFF;
+    int16_t mA = (magnitude * 65) / 10;  // convert raw to milliamps
     if (raw_cur & (1 << 15)) {
-      cur = -(raw_cur & 0x7FFF);
-    } else {
-      cur = raw_cur & 0x7FFF;
+      mA = -mA;
     }
     last_error_ = ServoError::none;
-    return cur;
+    return mA;
   }
 
   // Unlock EEPROM for writing (angle limits, mode, ID, etc.)
