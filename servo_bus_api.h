@@ -109,6 +109,7 @@ public:
   ServoError last_error_ = ServoError::none;
   HardwareSerial* bus_serial_ = nullptr;
   uint32_t timeout_ms_ = 2;
+  uint32_t saved_timeout_ms_ = 0;
   static const uint32_t max_servo_count = 10; // maximum servo count supported at once
   ServoType servo_type_ = ServoType::STS;  // Default to STS
   bool echo_enabled_ = true;  // Set false for boards with TX/RX isolation (e.g., Waveshare Servo Driver)
@@ -224,7 +225,10 @@ public:
   // TX/RX isolation (e.g., Waveshare Servo Driver board) where the ESP32
   // does not see its own transmitted bytes echoed back on RX.
   void set_echo_enabled(bool enabled) { echo_enabled_ = enabled; }
-  
+
+  void set_timeout(uint32_t ms) { timeout_ms_ = ms; }
+  uint32_t get_timeout() const { return timeout_ms_; }
+
   // Error state accessors
   inline bool ok() const { return last_error_ == ServoError::none; }
   inline ServoError last_error() const { return last_error_; }
@@ -1107,16 +1111,24 @@ public:
     return mA;
   }
 
+  static const uint32_t eeprom_timeout_ms = 50;
+
   // Unlock EEPROM for writing (angle limits, mode, ID, etc.)
   bool unlock_eeprom(uint8_t servo_id) {
     Register lock_reg = (servo_type_ == ServoType::STS) ? Register::lock_sts : Register::lock_sc;
-    return write_byte(servo_id, lock_reg, 0);
+    saved_timeout_ms_ = timeout_ms_;
+    timeout_ms_ = eeprom_timeout_ms;
+    bool ok = write_byte(servo_id, lock_reg, 0);
+    if (!ok) timeout_ms_ = saved_timeout_ms_;
+    return ok;
   }
 
-  // Lock EEPROM after writing
+  // Lock EEPROM after writing (restores pre-unlock timeout)
   bool lock_eeprom(uint8_t servo_id) {
     Register lock_reg = (servo_type_ == ServoType::STS) ? Register::lock_sts : Register::lock_sc;
-    return write_byte(servo_id, lock_reg, 1);
+    bool ok = write_byte(servo_id, lock_reg, 1);
+    timeout_ms_ = saved_timeout_ms_;
+    return ok;
   }
 
   // Enable motor/wheel mode (continuous rotation)

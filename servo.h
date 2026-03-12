@@ -132,7 +132,9 @@ public:
   bool write_angle_limits(uint16_t min_angle, uint16_t max_angle) {
     bus_->set_servo_type(type());
     if (!bus_->unlock_eeprom(id_)) return false;
+    delay(10);
     bool ok = bus_->write_angle_limits(id_, min_angle, max_angle);
+    delay(10);
     bus_->lock_eeprom(id_);
     if (ok) {
       min_encoder_angle_ = min_angle;
@@ -163,7 +165,9 @@ public:
   bool enable_motor_mode() {
     bus_->set_servo_type(type());
     if (!bus_->unlock_eeprom(id_)) return false;
+    delay(10);
     bool ok = bus_->enable_motor_mode(id_);
+    delay(10);
     bus_->lock_eeprom(id_);
     return ok;
   }
@@ -186,7 +190,9 @@ public:
       }
     }
     if (!bus_->unlock_eeprom(id_)) return false;
+    delay(10);
     bool ok = bus_->enable_position_mode(id_, min_angle, max_angle);
+    delay(10);
     bus_->lock_eeprom(id_);
     return ok;
   }
