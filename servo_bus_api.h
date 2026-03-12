@@ -713,6 +713,28 @@ public:
     return limits;
   }
 
+  // Write angle limits to servo EEPROM (caller must unlock EEPROM first)
+  bool write_angle_limits(uint8_t servo_id, uint16_t min_angle, uint16_t max_angle) {
+    // Write all 4 bytes (min_l, min_h, max_l, max_h) in one command
+    uint8_t params[5];
+    params[0] = to_byte(Register::min_angle_limit_l);
+    if (servo_type_ == ServoType::STS) {
+      pack_uint16_le(&params[1], min_angle);
+      pack_uint16_le(&params[3], max_angle);
+    } else {
+      pack_uint16_be(&params[1], min_angle);
+      pack_uint16_be(&params[3], max_angle);
+    }
+    if (!send_command(servo_id, Instruction::write, params, 5)) return false;
+    uint8_t response[MIN_PACKET_SIZE];
+    if (!read_response(response, MIN_PACKET_SIZE)) {
+      last_error_ = ServoError::no_ack;
+      return false;
+    }
+    last_error_ = ServoError::none;
+    return true;
+  }
+
   // Read identifying information from servo
   struct ServoInfo {
     uint16_t version;

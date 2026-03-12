@@ -20,6 +20,7 @@ public:
   uint16_t min_encoder_angle() const { return min_encoder_angle_; }
   uint16_t max_encoder_angle() const { return max_encoder_angle_; }
   uint16_t encoder_angle_range() const { return max_encoder_angle_ - min_encoder_angle_; }
+  uint16_t full_range() const { return (type() == ServoBusApi::ServoType::STS) ? 4095 : 1023; }
   bool info_loaded() const { return info_loaded_; }
   bool current_supported() const { return current_supported_; }
   
@@ -119,6 +120,33 @@ public:
   std::optional<uint8_t> read_mode() {
     bus_->set_servo_type(type());
     return bus_->read_mode(id_);
+  }
+
+  // Read angle limits from EEPROM
+  std::optional<ServoBusApi::AngleLimits> read_angle_limits() {
+    bus_->set_servo_type(type());
+    return bus_->read_angle_limits(id_);
+  }
+
+  // Write angle limits to EEPROM (with unlock/lock cycle)
+  bool write_angle_limits(uint16_t min_angle, uint16_t max_angle) {
+    bus_->set_servo_type(type());
+    if (!bus_->unlock_eeprom(id_)) return false;
+    bool ok = bus_->write_angle_limits(id_, min_angle, max_angle);
+    bus_->lock_eeprom(id_);
+    if (ok) {
+      min_encoder_angle_ = min_angle;
+      max_encoder_angle_ = max_angle;
+    }
+    return ok;
+  }
+
+  // Change servo ID permanently (with EEPROM unlock/lock)
+  bool set_id(uint8_t new_id) {
+    bus_->set_servo_type(type());
+    bool ok = bus_->set_servo_id_permanent(id_, new_id);
+    if (ok) id_ = new_id;
+    return ok;
   }
 
   bool unlock_eeprom() {
