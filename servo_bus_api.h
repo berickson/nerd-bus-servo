@@ -40,15 +40,31 @@ public:
     // EPROM (read/write)
     id = 5,
     baud_rate = 6,
+    max_temp_limit = 13,          // Max temperature limit °C
+    max_voltage_limit = 14,       // Max input voltage ×0.1V
+    min_voltage_limit = 15,       // Min input voltage ×0.1V
+    max_torque_limit_l = 16,      // Max torque EPROM low byte
+    max_torque_limit_h = 17,      // Max torque EPROM high byte
+    unload_conditions = 19,       // Bitmask: which protections cut torque
+    led_alarm_conditions = 20,    // Bitmask: which protections blink LED
     min_angle_limit_l = 9,
     min_angle_limit_h = 10,
     max_angle_limit_l = 11,
     max_angle_limit_h = 12,
     cw_dead = 26,
     ccw_dead = 27,
+    protection_current_l = 28,    // Protection current low byte (STS only)
+    protection_current_h = 29,    // Protection current high byte (STS only)
     ofs_l = 31,      // Offset calibration low byte (STS only)
     ofs_h = 32,      // Offset calibration high byte (STS only)
     mode = 33,       // Servo mode: 0=position, 1=wheel (continuous rotation) (STS only)
+    protective_torque = 34,       // Protective torque (STS only)
+    protection_time = 35,         // Protection time (STS only)
+    overload_torque = 36,         // Overload torque (STS only)
+    sc_protective_torque = 37,    // Protective torque (SC only)
+    overcurrent_prot_time = 38,   // Overcurrent protection time ×10ms (STS only)
+    sc_protection_time = 38,      // Protection time ×40ms (SC only) - shares addr with STS overcurrent_prot_time
+    sc_overload_torque = 39,      // Overload torque (SC only)
     
     // SRAM (read/write)
     torque_enable = 40,
@@ -73,6 +89,7 @@ public:
     present_load_h = 61,
     present_voltage = 62,
     present_temperature = 63,
+    servo_status = 65,            // Alarm bitmask: bit0=Volt, bit1=Sensor, bit2=Temp, bit3=Current, bit4=Angle, bit5=Overload
     moving = 66,
     present_current_l = 69,
     present_current_h = 70
@@ -178,21 +195,34 @@ public:
 
     // Handle address 48 conflict: SC=LOCK, STS=TORQUE_LIMIT_L
     if (addr == 48) {
-      // Both servos can use address 48, but for different purposes
-      // This is validated at the semantic level (which register name was used)
       return (reg == Register::lock_sc && type == ServoType::SC) ||
              (reg == Register::torque_limit_l && type == ServoType::STS);
+    }
+    // Handle address 38 conflict: STS=overcurrent_prot_time, SC=sc_protection_time
+    if (addr == 38) {
+      return (reg == Register::overcurrent_prot_time && type == ServoType::STS) ||
+             (reg == Register::sc_protection_time && type == ServoType::SC);
     }
 
     switch(reg) {
       // STS-only registers
+      case Register::protection_current_l:
+      case Register::protection_current_h:
       case Register::ofs_l:
       case Register::ofs_h:
       case Register::mode:
+      case Register::protective_torque:
+      case Register::protection_time:
+      case Register::overload_torque:
       case Register::acc:
       case Register::torque_limit_h:
       case Register::lock_sts:
         return type == ServoType::STS;
+
+      // SC-only registers
+      case Register::sc_protective_torque:
+      case Register::sc_overload_torque:
+        return type == ServoType::SC;
 
       // Common registers (valid for both types)
       default:
@@ -664,6 +694,29 @@ public:
       return false;
     }
 
+    last_error_ = ServoError::none;
+    return true;
+  }
+
+  // Read a 2-byte register (uses configured byte order)
+  std::optional<uint16_t> read_word(uint8_t servo_id, Register start_reg) {
+    auto bytes = read_register(servo_id, start_reg, 2);
+    if (!bytes) return std::nullopt;
+    last_error_ = ServoError::none;
+    return unpack_uint16(bytes);
+  }
+
+  // Write a 2-byte register (uses configured byte order)
+  bool write_word(uint8_t servo_id, Register start_reg, uint16_t value) {
+    uint8_t parameters[3];
+    parameters[0] = to_byte(start_reg);
+    pack_uint16(&parameters[1], value);
+    if(!send_command(servo_id, Instruction::write, parameters, 3)) return false;
+    uint8_t response[MIN_PACKET_SIZE];
+    if(!read_response(response, MIN_PACKET_SIZE)) {
+      last_error_ = ServoError::no_ack;
+      return false;
+    }
     last_error_ = ServoError::none;
     return true;
   }

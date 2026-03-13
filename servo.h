@@ -125,6 +125,11 @@ public:
     return bus_->read_current(id_);
   }
 
+  std::optional<uint8_t> read_alarm_status() {
+    bus_->set_servo_type(type());
+    return bus_->read_byte(id_, ServoBusApi::Register::servo_status);
+  }
+
   // Read operating mode (0=position, 3=motor; SC infers from angle limits)
   std::optional<uint8_t> read_mode() {
     bus_->set_servo_type(type());
