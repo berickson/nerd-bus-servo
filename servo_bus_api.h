@@ -40,6 +40,8 @@ public:
     // EPROM (read/write)
     id = 5,
     baud_rate = 6,
+    return_delay = 7,             // Response delay, unit 2µs, max 508µs
+    response_status_level = 8,    // 0=respond to read/ping only, 1=respond to all
     max_temp_limit = 13,          // Max temperature limit °C
     max_voltage_limit = 14,       // Max input voltage ×0.1V
     min_voltage_limit = 15,       // Min input voltage ×0.1V
@@ -47,12 +49,18 @@ public:
     max_torque_limit_h = 17,      // Max torque EPROM high byte
     unload_conditions = 19,       // Bitmask: which protections cut torque
     led_alarm_conditions = 20,    // Bitmask: which protections blink LED
+    p_coefficient = 21,           // PID proportional coefficient (0-254)
+    d_coefficient = 22,           // PID derivative coefficient (0-254)
+    i_coefficient = 23,           // PID integral coefficient (0-254)
+    min_starting_force_l = 24,    // Min output torque low byte (0-1000, 0.1% units)
+    min_starting_force_h = 25,    // Min output torque high byte
     min_angle_limit_l = 9,
     min_angle_limit_h = 10,
     max_angle_limit_l = 11,
     max_angle_limit_h = 12,
     cw_dead = 26,
     ccw_dead = 27,
+    sc_hysteresis = 28,           // Hysteresis deadband in steps (SC only, conflicts with STS protection_current)
     protection_current_l = 28,    // Protection current low byte (STS only)
     protection_current_h = 29,    // Protection current high byte (STS only)
     ofs_l = 31,      // Offset calibration low byte (STS only)

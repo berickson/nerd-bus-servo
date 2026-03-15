@@ -69,4 +69,58 @@ public:
     bus_->lock_eeprom(id_);
     return ok;
   }
+
+  struct TuningConfig {
+    uint8_t p_coefficient;
+    uint8_t d_coefficient;
+    uint8_t i_coefficient;
+    uint16_t min_starting_force;  // 0-1000, 0.1% units
+    uint8_t cw_dead;              // CW dead zone in steps (0-32)
+    uint8_t ccw_dead;             // CCW dead zone in steps (0-32)
+    uint8_t hysteresis;           // Positioning deadband in steps (0-32)
+  };
+
+  std::optional<TuningConfig> read_tuning_config() {
+    bus_->set_servo_type(type());
+    TuningConfig cfg;
+    auto v = bus_->read_byte(id_, ServoBusApi::Register::p_coefficient);
+    if (!v) return std::nullopt;
+    cfg.p_coefficient = *v;
+    v = bus_->read_byte(id_, ServoBusApi::Register::d_coefficient);
+    if (!v) return std::nullopt;
+    cfg.d_coefficient = *v;
+    v = bus_->read_byte(id_, ServoBusApi::Register::i_coefficient);
+    if (!v) return std::nullopt;
+    cfg.i_coefficient = *v;
+    auto w = bus_->read_word(id_, ServoBusApi::Register::min_starting_force_l);
+    if (!w) return std::nullopt;
+    cfg.min_starting_force = *w;
+    v = bus_->read_byte(id_, ServoBusApi::Register::cw_dead);
+    if (!v) return std::nullopt;
+    cfg.cw_dead = *v;
+    v = bus_->read_byte(id_, ServoBusApi::Register::ccw_dead);
+    if (!v) return std::nullopt;
+    cfg.ccw_dead = *v;
+    v = bus_->read_byte(id_, ServoBusApi::Register::sc_hysteresis);
+    if (!v) return std::nullopt;
+    cfg.hysteresis = *v;
+    return cfg;
+  }
+
+  bool write_tuning_config(const TuningConfig& cfg) {
+    bus_->set_servo_type(type());
+    if (!bus_->unlock_eeprom(id_)) return false;
+    delay(10);
+    bool ok = true;
+    ok = ok && bus_->write_byte(id_, ServoBusApi::Register::p_coefficient, cfg.p_coefficient);
+    ok = ok && bus_->write_byte(id_, ServoBusApi::Register::d_coefficient, cfg.d_coefficient);
+    ok = ok && bus_->write_byte(id_, ServoBusApi::Register::i_coefficient, cfg.i_coefficient);
+    ok = ok && bus_->write_word(id_, ServoBusApi::Register::min_starting_force_l, cfg.min_starting_force);
+    ok = ok && bus_->write_byte(id_, ServoBusApi::Register::cw_dead, cfg.cw_dead);
+    ok = ok && bus_->write_byte(id_, ServoBusApi::Register::ccw_dead, cfg.ccw_dead);
+    ok = ok && bus_->write_byte(id_, ServoBusApi::Register::sc_hysteresis, cfg.hysteresis);
+    delay(10);
+    bus_->lock_eeprom(id_);
+    return ok;
+  }
 };
