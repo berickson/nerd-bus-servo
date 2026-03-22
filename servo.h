@@ -2,6 +2,32 @@
 
 #include "servo_bus_api.h"
 
+// Known servo model versions from manufacturer specs (registers 3-4)
+// Add entries here as new models are discovered from real hardware
+struct ServoModelEntry {
+  uint8_t version_major;  // register 3
+  uint8_t version_minor;  // register 4
+  ServoBusApi::ServoType type;
+  const char* name;
+};
+
+static constexpr ServoModelEntry known_models[] = {
+  // SC series (big-endian, 10-bit)
+  {5, 4,  ServoBusApi::ServoType::SC,  "SCS"},      // confirmed on real hardware
+  {5, 15, ServoBusApi::ServoType::SC,  "SCS"},      // from SCS_Series_Memory_Table_Analysis.csv
+  // STS series (little-endian, 12-bit)
+  {9, 3,  ServoBusApi::ServoType::STS, "ST3215"},   // from ST3215 memory register map-EN.csv
+};
+
+static std::optional<const ServoModelEntry*> lookup_model(uint8_t major, uint8_t minor) {
+  for (const auto& entry : known_models) {
+    if (entry.version_major == major && entry.version_minor == minor) {
+      return &entry;
+    }
+  }
+  return std::nullopt;
+}
+
 // Base servo class
 class Servo {
 protected:
@@ -24,43 +50,55 @@ public:
   bool info_loaded() const { return info_loaded_; }
   bool current_supported() const { return current_supported_; }
   
-  // Infer servo type by reading angle limits
-  // STS servos: max angle typically 4095 (12-bit range: 0-4095)
-  // SC servos: max angle typically 1023 (10-bit range: 0-1023)
+  // Detect servo type using version registers, falling back to angle limit heuristic
   static std::optional<ServoBusApi::ServoType> infer_servo_type(ServoBusApi* bus, uint8_t id) {
-    // Try STS first (little-endian, 12-bit range)
+    // Step 1: Read version registers (3-4). These are individual bytes,
+    // so byte order is irrelevant — works regardless of servo type setting.
     bus->set_servo_type(ServoBusApi::ServoType::STS);
-    auto sts_limits = bus->read_angle_limits(id);
-    
-    if (sts_limits && sts_limits->max_angle >= 1024 && sts_limits->max_angle <= 4095) {
-      auto verify = bus->read_angle_limits(id);
-      if (verify && verify->max_angle >= 1024 && verify->max_angle <= 4095) {
-        return ServoBusApi::ServoType::STS;
+    auto ver_raw = bus->read_register(id, ServoBusApi::Register::version_l, 2);
+    if (ver_raw) {
+      uint8_t version_major = ver_raw[0];
+      uint8_t version_minor = ver_raw[1];
+
+      auto match = lookup_model(version_major, version_minor);
+      if (match) {
+        Serial.printf("Servo %d: version %d.%d → %s (known model)\n",
+                       id, version_major, version_minor, (*match)->name);
+        return (*match)->type;
       }
+      Serial.printf("Servo %d: version %d.%d (unknown model, using angle heuristic)\n",
+                     id, version_major, version_minor);
     }
-    
-    // STS servo in motor/wheel mode has max_angle=0, which would falsely
-    // match SC range. Check the MODE register (STS-only, register 33)
-    // to catch this case before falling through to SC detection.
-    if (sts_limits && sts_limits->max_angle == 0) {
+
+    // Step 2: Angle limit heuristic fallback for unknown models
+    // Read raw bytes once and check both byte-order interpretations
+    auto raw_max = bus->read_register(id, ServoBusApi::Register::max_angle_limit_l, 2);
+    if (!raw_max) return std::nullopt;
+
+    uint8_t b0 = raw_max[0];
+    uint8_t b1 = raw_max[1];
+    uint16_t as_sts = b0 | (b1 << 8);         // little-endian interpretation
+    uint16_t as_sc  = (b0 << 8) | b1;         // big-endian interpretation
+    bool valid_sts = (as_sts >= 1024 && as_sts <= 4095);
+    bool valid_sc  = (as_sc <= 1023);
+
+    Serial.printf("Servo %d: angle raw [0x%02X,0x%02X] as_sts=%d as_sc=%d\n",
+                   id, b0, b1, as_sts, as_sc);
+
+    if (valid_sts && !valid_sc) return ServoBusApi::ServoType::STS;
+    if (valid_sc && !valid_sts) return ServoBusApi::ServoType::SC;
+
+    // Both zero → likely wheel/motor mode, check MODE register
+    if (as_sts == 0) {
       auto mode = bus->read_mode(id);
       if (mode.has_value() && mode.value() != 0) {
         return ServoBusApi::ServoType::STS;
       }
     }
-    
-    // Try SC (big-endian, 10-bit range)
-    bus->set_servo_type(ServoBusApi::ServoType::SC);
-    auto sc_limits = bus->read_angle_limits(id);
-    
-    if (sc_limits && sc_limits->max_angle >= 0 && sc_limits->max_angle <= 1023) {
-      auto verify = bus->read_angle_limits(id);
-      if (verify && verify->max_angle >= 0 && verify->max_angle <= 1023) {
-        return ServoBusApi::ServoType::SC;
-      }
-    }
-    
-    return std::nullopt;  // Could not determine type
+
+    // Ambiguous (both interpretations valid) or neither valid
+    Serial.printf("Servo %d: type ambiguous (sts=%d sc=%d)\n", id, as_sts, as_sc);
+    return std::nullopt;
   }
   
   virtual ServoBusApi::ServoType type() const = 0;
